@@ -1338,6 +1338,23 @@
   }
   .pin-input:focus { border-color: var(--accent); outline: none; }
 
+  /* === Pull to refresh === */
+  .pull-indicator {
+    position: fixed;
+    top: 0; left: 50%;
+    transform: translateX(-50%) translateY(-100%);
+    background: var(--accent);
+    color: white;
+    padding: 8px 18px;
+    border-radius: 0 0 14px 14px;
+    font-weight: 700;
+    font-size: 13px;
+    z-index: 100;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    white-space: nowrap;
+  }
+
   /* === Toast 강화 === */
   .toast-big {
     position: fixed;
@@ -2539,14 +2556,40 @@ function updateSrs(vocab, correct) {
 }
 
 /* ---------- TTS / STT (Web Speech API) ---------- */
-function speak(text) {
+let _voicesReady = false;
+function _ensureVoices() {
+  if (_voicesReady) return Promise.resolve();
+  return new Promise(resolve => {
+    const synth = window.speechSynthesis;
+    if (!synth) return resolve();
+    if (synth.getVoices().length > 0) { _voicesReady = true; return resolve(); }
+    const handler = () => { _voicesReady = true; synth.onvoiceschanged = null; resolve(); };
+    synth.onvoiceschanged = handler;
+    setTimeout(() => { _voicesReady = true; resolve(); }, 1500); // 안전망
+  });
+}
+
+async function speak(text) {
+  if (!text) return;
+  const safe = String(text).slice(0, 3000).trim();
+  if (!safe) return;
+  if (!('speechSynthesis' in window)) { toast('이 브라우저는 음성 합성을 지원하지 않아요'); return; }
   try {
-    const u = new SpeechSynthesisUtterance(text);
+    await _ensureVoices();
+    const synth = window.speechSynthesis;
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(safe);
     u.lang = 'en-US';
-    u.rate = state.settings.ttsSpeed || 0.9;
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
-  } catch(e) { console.warn('TTS failed', e); }
+    u.rate = state.settings?.ttsSpeed || 0.9;
+    u.pitch = 1;
+    u.volume = 1;
+    const voices = synth.getVoices();
+    const enVoice = voices.find(v => v.lang && v.lang.toLowerCase().startsWith('en'));
+    if (enVoice) u.voice = enVoice;
+    u.onerror = e => console.warn('TTS error', e);
+    // Chrome Android 일부 버전: cancel 직후 speak 실패 — 살짝 지연
+    setTimeout(() => { try { synth.speak(u); } catch (e) { console.warn('TTS speak failed', e); } }, 60);
+  } catch(e) { console.warn('TTS failed', e); toast('읽기를 시작할 수 없어요'); }
 }
 
 let recognition = null;
@@ -2638,6 +2681,20 @@ function renderChat() {
   document.getElementById('main').innerHTML = `
     <h2 style="margin-bottom:6px">💬 AI 대화 연습</h2>
     <p class="subtitle" style="margin-bottom:14px">${state.user.level} 레벨에 맞춰 대화해요</p>
+
+    <div class="card" style="background:var(--blue-soft); border-color:var(--blue); margin-bottom:14px">
+      <strong style="color:var(--blue)">🌐 외부 AI 채팅으로 연습하기</strong>
+      <p style="font-size:12px; color:var(--ink-soft); margin: 6px 0 10px; line-height:1.5">앱 안 짧은 응답 대신 정식 AI 채팅에서 자유롭게 영어 회화 연습</p>
+      <div style="display:flex; gap:8px">
+        <a href="https://chatgpt.com/?q=${encodeURIComponent(`Be my English conversation tutor for a ${state.user.level} Korean learner. Reply in 1-2 simple sentences and ask a follow-up question. Hi!`)}" target="_blank" rel="noopener" style="flex:1; text-decoration:none">
+          <button class="btn btn-ghost" style="width:100%; padding:11px; font-size:14px">💬 ChatGPT</button>
+        </a>
+        <a href="https://claude.ai/new?q=${encodeURIComponent(`Be my English conversation tutor for a ${state.user.level} Korean learner. Reply in 1-2 simple sentences and ask a follow-up question. Hi!`)}" target="_blank" rel="noopener" style="flex:1; text-decoration:none">
+          <button class="btn btn-ghost" style="width:100%; padding:11px; font-size:14px">💬 Claude</button>
+        </a>
+      </div>
+    </div>
+
     ${warnHtml}
     <div id="chat-area" style="display:flex; flex-direction:column"></div>
     <div id="chat-loading" style="display:none; padding:10px"><div class="dots"><span></span><span></span><span></span></div></div>
@@ -2735,7 +2792,8 @@ Be conversational, ask follow-up questions, gently correct major errors (mention
     }
   } catch(e) {
     console.error(e);
-    return { en: `(Connection error)`, ko: '(연결 오류 - 인터넷을 확인하세요)' };
+    const msg = (e && e.message) ? e.message.slice(0, 200) : '알 수 없는 오류';
+    return { en: `(Error)`, ko: '⚠️ ' + msg };
   }
 }
 
@@ -3189,8 +3247,26 @@ async function generateReadingArticle(topicEn, topicKo) {
     activeScreen = 'reading-view';
     render();
   } catch(e) {
-    toast('글 생성 실패. API 키 또는 네트워크를 확인하세요.');
-    setTimeout(() => nav('reading'), 1000);
+    console.error(e);
+    const errMsg = (e && e.message) ? e.message.slice(0, 200) : '알 수 없는 오류';
+    document.getElementById('main').innerHTML = `
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px">
+        <button class="close-btn" onclick="nav('reading')">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <strong>글 생성 실패</strong>
+      </div>
+      <div class="card">
+        <h3 style="color:var(--danger); margin-bottom:8px">⚠️ AI 글 생성에 실패했어요</h3>
+        <p style="font-size:13px; word-break:break-word; margin-bottom:10px">${escapeHtml(errMsg)}</p>
+        <p style="font-size:12px; color:var(--ink-muted); line-height:1.5">
+          • 로컬 모드: 설정에서 API 키가 유효한지 확인<br>
+          • 클라우드 모드: 백엔드의 /health에서 apiKeyConfigured: true 확인<br>
+          • Anthropic 결제·잔액 확인
+        </p>
+        <button class="btn btn-ghost" style="margin-top:14px" onclick="nav('reading')">읽기 목록으로</button>
+      </div>
+    `;
   }
 }
 
@@ -4558,36 +4634,71 @@ function finishWordGame() {
 const MEDIA_RESOURCES = {
   drama: [
     { id: 'd1', title: 'Friends (프렌즈)', level: 'B1', desc: '뉴욕 친구 6명의 일상. 일상 영어·유머·관용표현 학습의 정석.',
-      keywords: ['How you doin\'?', 'No way!', 'I\'m fine.', 'What\'s up?'],
+      keywords: [
+        { en: "How you doin'?", ko: '잘 지내?' },
+        { en: 'No way!', ko: '말도 안 돼!' },
+        { en: "I'm fine.", ko: '난 괜찮아.' },
+        { en: "What's up?", ko: '뭐 해? / 무슨 일이야?' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Friends+English+subtitles' },
     { id: 'd2', title: 'Modern Family (모던 패밀리)', level: 'B1-B2', desc: '미국 다세대 가족 시트콤. 다양한 억양과 자연스러운 회화.',
-      keywords: ['Are you kidding me?', 'I told you so', 'Get over it'],
+      keywords: [
+        { en: 'Are you kidding me?', ko: '농담하는 거지?' },
+        { en: 'I told you so.', ko: '내가 그랬잖아.' },
+        { en: 'Get over it.', ko: '잊어버려. / 극복해.' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Modern+Family+English' },
     { id: 'd3', title: 'Extra English (학습 전용)', level: 'A2', desc: '영어 학습자를 위해 만든 드라마. 천천히 분명하게 말함.',
-      keywords: ['What\'s your name?', 'Do you live here?', 'Where are you from?'],
+      keywords: [
+        { en: "What's your name?", ko: '이름이 뭐예요?' },
+        { en: 'Do you live here?', ko: '여기 사세요?' },
+        { en: 'Where are you from?', ko: '어디서 오셨어요?' }
+      ],
       url: 'https://www.youtube.com/playlist?list=PLA993E1656DE96D3C' },
     { id: 'd4', title: 'BBC Doctor Who (닥터 후)', level: 'B2', desc: '영국식 영어의 정수. SF 어휘와 빠른 대화.',
-      keywords: ['Brilliant!', 'Allons-y!', 'Run!'],
+      keywords: [
+        { en: 'Brilliant!', ko: '대단해! / 멋져!' },
+        { en: "Allons-y!", ko: '가자! (프랑스어 차용)' },
+        { en: 'Run!', ko: '뛰어!' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Doctor+Who+English+clips' },
     { id: 'd5', title: 'The Crown (더 크라운)', level: 'B2-C1', desc: '왕실 영어, 격식 있는 표현. 어휘 수준 높음.',
-      keywords: ['Indeed', 'I\'m afraid not', 'With all due respect'],
+      keywords: [
+        { en: 'Indeed.', ko: '정말로. / 그렇습니다. (격식체 동의)' },
+        { en: "I'm afraid not.", ko: '죄송하지만 아닙니다. (정중한 거절)' },
+        { en: 'With all due respect.', ko: '존중하지만 / 외람되지만 (반대 의견)' }
+      ],
       url: 'https://www.youtube.com/results?search_query=The+Crown+Netflix+clips' }
   ],
   movie: [
     { id: 'm1', title: 'Finding Nemo (니모를 찾아서)', level: 'A2-B1', desc: '발음이 분명한 픽사 애니메이션. 가족 영화라 어휘 깨끗.',
-      keywords: ['Just keep swimming', 'I shall call him Squishy'],
+      keywords: [
+        { en: 'Just keep swimming.', ko: '계속 헤엄쳐. (포기하지 말라는 뜻)' },
+        { en: 'I shall call him Squishy.', ko: '난 그를 스퀴시라고 부를 거야.' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Finding+Nemo+English+clips' },
     { id: 'm2', title: 'Toy Story (토이 스토리)', level: 'A2-B1', desc: '자연스러운 일상 대화와 우정/감정 표현.',
-      keywords: ['To infinity and beyond!', 'You\'ve got a friend in me'],
+      keywords: [
+        { en: 'To infinity and beyond!', ko: '무한한 공간 저 너머로!' },
+        { en: "You've got a friend in me.", ko: '나는 네 친구야.' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Toy+Story+clips+English' },
     { id: 'm3', title: 'The Pursuit of Happyness', level: 'B1-B2', desc: '윌 스미스 주연. 진솔한 표현·인생 어휘.',
-      keywords: ['Don\'t ever let somebody tell you, you can\'t do something.'],
+      keywords: [
+        { en: "Don't ever let somebody tell you, you can't do something.", ko: '누구도 너에게 못한다고 말하게 두지 마.' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Pursuit+of+Happyness+English+scenes' },
     { id: 'm4', title: 'Forrest Gump (포레스트 검프)', level: 'B1-B2', desc: '느린 남부 억양, 명대사 풍부.',
-      keywords: ['Life is like a box of chocolates', 'Run, Forrest, run!'],
+      keywords: [
+        { en: 'Life is like a box of chocolates.', ko: '인생은 초콜릿 상자와 같다. (뭐가 나올지 모름)' },
+        { en: 'Run, Forrest, run!', ko: '뛰어, 포레스트, 뛰어!' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Forrest+Gump+English+scenes' },
     { id: 'm5', title: 'Harry Potter 시리즈', level: 'B1-B2', desc: '영국식 영어, 다양한 어휘 및 마법 용어.',
-      keywords: ['Wingardium Leviosa', 'Yer a wizard, Harry'],
+      keywords: [
+        { en: 'Wingardium Leviosa', ko: '윙가르디움 레비오우사 (공중부양 주문)' },
+        { en: "Yer a wizard, Harry.", ko: '넌 마법사야, 해리. (영국식 사투리)' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Harry+Potter+English+clips' }
   ],
   song: [
@@ -4595,19 +4706,28 @@ const MEDIA_RESOURCES = {
       lyrics: 'Twinkle twinkle little star, How I wonder what you are. Up above the world so high, Like a diamond in the sky.',
       url: 'https://www.youtube.com/results?search_query=Twinkle+Twinkle+little+star' },
     { id: 's2', title: 'Let It Be — The Beatles', level: 'A2-B1', desc: '느리고 분명한 발음. 위로의 노래.',
-      keywords: ['Let it be', 'When I find myself in times of trouble'],
+      keywords: [
+        { en: 'Let it be.', ko: '내버려둬. / 그대로 있게 해.' },
+        { en: 'When I find myself in times of trouble.', ko: '내가 힘든 시간에 처할 때.' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Let+it+be+Beatles+lyrics' },
     { id: 's3', title: 'Imagine — John Lennon', level: 'B1', desc: '평화의 메시지. 가정법 표현 좋음.',
-      keywords: ['Imagine all the people', 'You may say I\'m a dreamer'],
+      keywords: [
+        { en: 'Imagine all the people.', ko: '모든 사람을 상상해 봐.' },
+        { en: "You may say I'm a dreamer.", ko: '당신은 내가 몽상가라고 할지 모르지만.' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Imagine+John+Lennon+lyrics' },
     { id: 's4', title: 'Shape of You — Ed Sheeran', level: 'B1', desc: '인기 팝송. 비교적 분명한 발음.',
-      keywords: ['I\'m in love with the shape of you'],
+      keywords: [
+        { en: "I'm in love with the shape of you.", ko: '난 너의 모습에 사랑에 빠졌어.' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Shape+of+You+Ed+Sheeran+lyrics' },
     { id: 's5', title: 'Someone Like You — Adele', level: 'B2', desc: '발음 또렷, 감정 표현 풍부.',
-      keywords: ['Never mind, I\'ll find someone like you'],
+      keywords: [
+        { en: "Never mind, I'll find someone like you.", ko: '괜찮아, 너 같은 사람 찾을 거야.' }
+      ],
       url: 'https://www.youtube.com/results?search_query=Someone+Like+You+Adele+lyrics' },
     { id: 's6', title: 'LyricsTraining (사이트)', level: 'all', desc: '실제 뮤직비디오로 빈칸 채우기 듣기 연습.',
-      keywords: ['웹사이트', '레벨 선택 가능'],
       url: 'https://lyricstraining.com/' }
   ],
   fairytale: [
@@ -4615,22 +4735,31 @@ const MEDIA_RESOURCES = {
       text: 'A hare made fun of a tortoise for being slow. The tortoise challenged him to a race. The hare ran fast then took a nap. The tortoise kept walking slowly and won the race. Slow and steady wins the race.',
       url: 'https://www.gutenberg.org/files/19994/19994-h/19994-h.htm' },
     { id: 'f2', title: 'The Ugly Duckling (미운 오리 새끼)', level: 'A2', desc: '안데르센. 자존감과 정체성.',
-      keywords: ['ugly', 'beautiful swan', 'different'],
+      keywords: [
+        { en: 'ugly', ko: '못생긴' },
+        { en: 'beautiful swan', ko: '아름다운 백조' },
+        { en: 'different', ko: '다른' }
+      ],
       url: 'https://www.gutenberg.org/cache/epub/27200/pg27200-images.html' },
     { id: 'f3', title: 'The Little Red Riding Hood (빨간 모자)', level: 'A1-A2', desc: '그림 형제 동화. 단순 반복 구조.',
-      keywords: ['What big eyes you have!', 'All the better to see you with'],
+      keywords: [
+        { en: 'What big eyes you have!', ko: '눈이 정말 크네요!' },
+        { en: 'All the better to see you with.', ko: '너를 더 잘 보려고 그렇단다.' }
+      ],
       url: 'https://www.gutenberg.org/files/2591/2591-h/2591-h.htm' },
     { id: 'f4', title: 'Cinderella (신데렐라)', level: 'A2', desc: '익숙한 줄거리, 어휘 습득 좋음.',
-      keywords: ['fairy godmother', 'midnight', 'glass slipper'],
+      keywords: [
+        { en: 'fairy godmother', ko: '대모 요정' },
+        { en: 'midnight', ko: '자정' },
+        { en: 'glass slipper', ko: '유리 구두' }
+      ],
       url: 'https://www.gutenberg.org/files/2591/2591-h/2591-h.htm' },
     { id: 'f5', title: "The Boy Who Cried Wolf (양치기 소년)", level: 'A1', desc: '이솝. 거짓말의 교훈.',
       text: 'A shepherd boy watched sheep. He cried "Wolf!" to trick the villagers. They came, but there was no wolf. He did it again. The villagers were angry. One day, a real wolf came. He cried "Wolf!" but no one came. The wolf ate the sheep.',
       url: 'https://www.gutenberg.org/files/19994/19994-h/19994-h.htm' },
-    { id: 'f6', title: 'Aesop\'s Fables (이솝 우화 전집)', level: 'A2-B1', desc: 'Project Gutenberg 무료 전집.',
-      keywords: ['public domain', '수백 편'],
+    { id: 'f6', title: 'Aesop\'s Fables (이솝 우화 전집)', level: 'A2-B1', desc: 'Project Gutenberg 무료 전집 (수백 편 수록).',
       url: 'https://www.gutenberg.org/ebooks/11339' },
-    { id: 'f7', title: 'Grimm\'s Fairy Tales (그림 동화 전집)', level: 'B1', desc: 'Project Gutenberg 무료 전집.',
-      keywords: ['Brothers Grimm', '독일 → 영어'],
+    { id: 'f7', title: 'Grimm\'s Fairy Tales (그림 동화 전집)', level: 'B1', desc: '그림 형제(Brothers Grimm) 독일 원작의 영어 전집 — Project Gutenberg.',
       url: 'https://www.gutenberg.org/files/2591/2591-h/2591-h.htm' }
   ]
 };
@@ -4644,7 +4773,10 @@ function renderMedia() {
   ).join('');
   const items = MEDIA_RESOURCES[mediaTab] || [];
   const itemsHtml = items.map(item => {
-    const kw = (item.keywords || []).slice(0, 3).map(k => `<strong>${escapeHtml(k)}</strong>`).join(' · ');
+    const kw = (item.keywords || []).slice(0, 3).map(k => {
+      const text = (typeof k === 'object' && k !== null) ? (k.en || '') : String(k);
+      return `<strong>${escapeHtml(text)}</strong>`;
+    }).join(' · ');
     return `
       <div class="media-item" onclick="openMedia('${mediaTab}','${item.id}')">
         <div class="meta-row">
@@ -4684,7 +4816,20 @@ function renderMediaDetail() {
   const m = currentMedia;
   if (!m) return nav('media');
   const tabLabel = MEDIA_TAB_LABELS[m._tab];
-  const kwHtml = (m.keywords || []).map(k => `<div class="grammar-example"><div class="en">${escapeHtml(k)}</div></div>`).join('');
+  const kwHtml = (m.keywords || []).map(k => {
+    if (typeof k === 'object' && k !== null && k.en) {
+      return `
+        <div style="display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border-bottom:1px solid var(--line);">
+          <div style="flex:1; min-width:0">
+            <div style="font-weight:700; font-size:15px; word-break:keep-all">${escapeHtml(k.en)}</div>
+            ${k.ko ? `<div style="font-size:13px; color:var(--ink-soft); margin-top:3px; line-height:1.4">${escapeHtml(k.ko)}</div>` : ''}
+          </div>
+          <button onclick="speak(${JSON.stringify(k.en).replace(/"/g,'&quot;')})" title="듣기" style="background:var(--accent); color:white; border:none; padding:8px 12px; border-radius:8px; font-size:14px; cursor:pointer; flex-shrink:0">🔊</button>
+        </div>
+      `;
+    }
+    return `<div class="grammar-example"><div class="en">${escapeHtml(String(k))}</div></div>`;
+  }).join('');
   const textBlock = m.text ? `
     <div class="grammar-section">
       <h4>📖 본문 (단어 탭하면 사전)</h4>
@@ -4893,7 +5038,10 @@ async function renderBible() {
     <div class="verse-actions">
       <button onclick="speakPassage()">🔊 읽어주기</button>
       <button onclick="toggleSaveVerse('${escapeAttr(ref)}','${escapeAttr(refKo)}')">${isSaved ? '✅ 저장됨' : '⭐ 저장'}</button>
-      <button onclick="advanceToNext()">⏭ 다음 ${VERSES_PER_DAY}구절</button>
+    </div>
+    <div class="verse-actions">
+      <button onclick="goBackVerse()" ${_bibleCursorHistory.length === 0 ? 'disabled style="opacity:0.5"' : ''}>◀ 이전</button>
+      <button class="primary" onclick="advanceToNext()" style="background:var(--accent); color:white; border-color:var(--accent)">⏭ 다음 ${VERSES_PER_DAY}구절</button>
     </div>
     <p style="font-size:12px; color:var(--ink-muted); margin-top:14px; line-height:1.5">
       💡 영어 단어를 탭하면 사전 / "AI 풀이"로 번역·의미·핵심 단어·문법 분석을 받아요.
@@ -4918,11 +5066,25 @@ function speakPassage() {
   if (txt) speak(txt);
 }
 
+let _bibleCursorHistory = []; // 세션 동안만 유지되는 이전 cursor 기록
+
 function advanceToNext() {
-  // 현재 fetch 결과를 기반으로 다음 위치 계산
+  // 현재 cursor를 history에 저장한 뒤 다음 위치로 이동
+  _bibleCursorHistory.push(JSON.parse(JSON.stringify(state.bible.cursor)));
+  if (_bibleCursorHistory.length > 50) _bibleCursorHistory.shift();
   const ref = curRef();
   const cached = (state.bible.verseCache || {})[ref];
   advanceCursor(cached?.verses || []);
+  renderBible();
+}
+
+function goBackVerse() {
+  if (_bibleCursorHistory.length === 0) {
+    toast('이전 구절 기록이 없어요. 직접 책/장을 이동하려면 NIV 원문 링크를 이용하세요.');
+    return;
+  }
+  state.bible.cursor = _bibleCursorHistory.pop();
+  saveState();
   renderBible();
 }
 
@@ -4996,7 +5158,8 @@ async function explainPassage(ref, refKo) {
     renderPassageExplain(parsed, ref);
   } catch (e) {
     console.error(e);
-    slot.innerHTML = '<p style="color:var(--danger); text-align:center">풀이를 분석할 수 없었어요. 다시 시도해주세요.</p>';
+    const errMsg = (e && e.message) ? e.message.slice(0, 200) : '알 수 없는 오류';
+    slot.innerHTML = `<div class="card" style="margin-top:14px"><h3 style="color:var(--danger); margin-bottom:8px">⚠️ 풀이 실패</h3><p style="font-size:13px; word-break:break-word">${escapeHtml(errMsg)}</p><p style="font-size:12px; color:var(--ink-muted); margin-top:10px">로컬 모드: 설정에서 API 키 확인 · 클라우드 모드: 백엔드/health 응답에 apiKeyConfigured: true 인지 확인</p></div>`;
   }
 }
 
@@ -6273,12 +6436,71 @@ async function cloudAdminSaveSignupCode() {
   } catch (e) { toast('실패: ' + e.message); }
 }
 
+/* ---------- PULL TO REFRESH ---------- */
+function setupPullToRefresh() {
+  const main = document.getElementById('main');
+  if (!main) return;
+  let startY = 0;
+  let pulling = false;
+  let indicator = null;
+  const THRESHOLD = 70;
+  const MAX = 110;
+
+  main.addEventListener('touchstart', e => {
+    if (main.scrollTop <= 0 && e.touches.length === 1) {
+      startY = e.touches[0].clientY;
+      pulling = true;
+    } else {
+      pulling = false;
+    }
+  }, { passive: true });
+
+  main.addEventListener('touchmove', e => {
+    if (!pulling) return;
+    if (main.scrollTop > 0) {
+      pulling = false;
+      if (indicator) { indicator.remove(); indicator = null; }
+      return;
+    }
+    const dy = e.touches[0].clientY - startY;
+    if (dy > 0) {
+      if (!indicator) {
+        indicator = document.createElement('div');
+        indicator.className = 'pull-indicator';
+        document.body.appendChild(indicator);
+      }
+      const damped = Math.min(dy * 0.5, MAX);
+      indicator.style.transform = `translateX(-50%) translateY(${damped}px)`;
+      indicator.textContent = dy >= THRESHOLD ? '↻ 놓으면 새로고침' : '↓ 당겨서 새로고침';
+    }
+  }, { passive: true });
+
+  main.addEventListener('touchend', e => {
+    if (!pulling) return;
+    pulling = false;
+    const dy = e.changedTouches[0].clientY - startY;
+    if (indicator) {
+      indicator.style.transition = 'transform 0.2s, opacity 0.2s';
+      indicator.style.transform = 'translateX(-50%) translateY(-100%)';
+      indicator.style.opacity = '0';
+      const toRemove = indicator;
+      setTimeout(() => toRemove.remove(), 220);
+      indicator = null;
+    }
+    if (dy > THRESHOLD && main.scrollTop === 0) {
+      // 새 버전 받기 위해 서비스 워커 캐시 무시하고 새로고침
+      location.reload();
+    }
+  });
+}
+
 /* ---------- INIT ---------- */
 window.addEventListener('load', () => {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {/* file:// 일 땐 무시 */});
   }
   render();
+  setupPullToRefresh();
 });
 </script>
 </body>
