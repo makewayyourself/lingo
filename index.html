@@ -1216,6 +1216,128 @@
   }
   .pro-vocab-item .save-btn.saved { background: var(--success); color: white; }
 
+  /* === Profile picker / signup === */
+  .profile-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .profile-card {
+    background: var(--bg-card);
+    border: 2px solid var(--line);
+    border-bottom-width: 5px;
+    border-radius: var(--r-lg);
+    padding: 22px 12px;
+    cursor: pointer;
+    text-align: center;
+    transition: transform 0.1s;
+    font-family: var(--sans);
+    min-height: 150px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+  }
+  .profile-card:active { transform: translateY(2px); border-bottom-width: 3px; }
+  .profile-card .avatar {
+    width: 60px; height: 60px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--serif);
+    font-size: 28px;
+    font-weight: 700;
+    box-shadow: 0 3px 0 var(--accent-dark);
+  }
+  .profile-card .avatar.admin { background: var(--purple); box-shadow: 0 3px 0 #5a35cf; }
+  .profile-card .name { font-weight: 800; font-size: 15px; }
+  .profile-card .role {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--bg-muted);
+    color: var(--ink-soft);
+    font-weight: 700;
+  }
+  .profile-card .role.admin { background: var(--purple-soft); color: var(--purple); }
+  .profile-card.add {
+    background: var(--accent-soft);
+    border: 2px dashed var(--accent);
+    color: var(--accent);
+  }
+  .profile-card.add .plus { font-size: 38px; }
+  .profile-card.add .name { color: var(--accent-dark); }
+  .profile-card.disabled { opacity: 0.5; pointer-events: none; }
+
+  /* === Admin page === */
+  .admin-row {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    padding: 14px;
+    margin-bottom: 10px;
+  }
+  .admin-row .head {
+    display: flex; gap: 10px; align-items: center; margin-bottom: 8px;
+  }
+  .admin-row .avatar-sm {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--serif);
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .admin-row .avatar-sm.admin { background: var(--purple); }
+  .admin-row .name { font-weight: 800; flex: 1; }
+  .admin-row .stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 6px;
+    margin: 8px 0;
+  }
+  .admin-row .stat-mini {
+    text-align: center;
+    background: var(--bg-muted);
+    border-radius: 8px;
+    padding: 6px 4px;
+  }
+  .admin-row .stat-mini .v { font-weight: 800; font-family: var(--serif); font-size: 17px; }
+  .admin-row .stat-mini .l { font-size: 10px; color: var(--ink-soft); }
+  .admin-row .actions { display: flex; gap: 6px; margin-top: 6px; }
+  .admin-row .actions button {
+    flex: 1;
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--bg-card);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .admin-row .actions button.danger { color: var(--danger); border-color: var(--danger-soft); }
+
+  /* PIN input */
+  .pin-input {
+    width: 100%;
+    padding: 18px;
+    font-size: 24px;
+    text-align: center;
+    letter-spacing: 12px;
+    border: 2px solid var(--line);
+    border-radius: var(--r-md);
+    font-family: var(--sans);
+    font-weight: 700;
+    background: var(--bg-card);
+  }
+  .pin-input:focus { border-color: var(--accent); outline: none; }
+
   /* === Toast 강화 === */
   .toast-big {
     position: fixed;
@@ -1297,8 +1419,14 @@
    Single-file Android-installable app
    ========================================================= */
 
-/* ---------- STATE / STORAGE ---------- */
-const STORE_KEY = 'lingo_state_v1';
+/* ---------- STATE / STORAGE (멀티 프로필 + 관리자) ---------- */
+// app-level: 프로필 목록·관리자 PIN·공용 API 키 (5명 회원 공유)
+// per-profile: 각자의 학습 상태 (lingo_profile_<id>)
+const APP_KEY = 'lingo_app_v1';
+const STORE_KEY = 'lingo_state_v1'; // 구버전 마이그레이션용
+const MAX_PROFILES = 5;
+const profileKey = (id) => 'lingo_profile_' + id;
+
 const DEFAULT_STATE = {
   user: { name: '', level: null, dailyGoal: 50, onboarded: false },
   stats: { xp: 0, streak: 0, lastStudyDate: null, hearts: 5, lastHeartRegen: Date.now(), totalLessons: 0, totalCorrect: 0, totalAttempts: 0, gems: 0 },
@@ -1314,22 +1442,94 @@ const DEFAULT_STATE = {
   bible: { lastReadDate: null, savedVerses: [], readDays: 0, verseCache: {}, explainCache: {}, cursor: { bookIdx: 0, chapter: 1, verse: 1 } }, // 매일 3구절씩 순차 묵상
   vocabTest: { totalTests: 0, totalQuestions: 0, totalCorrect: 0, lastMissed: [], lastTestDate: null }, // 단어 외움 확인
   profession: { generated: {} }, // 분야별 AI 확장 단어 캐시
-  settings: { ttsSpeed: 0.9, apiKey: '' }
+  settings: { ttsSpeed: 0.9, apiKey: '' } // apiKey는 app.apiKey에서 동기화됨
 };
 
+const DEFAULT_APP = {
+  profiles: [],     // [{ id, name, role: 'admin'|'member', createdAt, lastActive }]
+  currentId: null,
+  adminPin: null,   // 6자리 (관리자가 처음 진입 시 설정)
+  apiKey: '',       // 공용 Anthropic API 키 (관리자만 편집)
+  ttsSpeed: 0.9
+};
+
+let app = loadApp();
 let state = loadState();
 
-function loadState() {
+function loadApp() {
   try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (!raw) return JSON.parse(JSON.stringify(DEFAULT_STATE));
-    const parsed = JSON.parse(raw);
-    return deepMerge(JSON.parse(JSON.stringify(DEFAULT_STATE)), parsed);
-  } catch(e) {
+    const raw = localStorage.getItem(APP_KEY);
+    if (raw) {
+      return Object.assign({}, DEFAULT_APP, JSON.parse(raw));
+    }
+  } catch (e) {}
+  // v1 단일 상태 → 첫 관리자 프로필로 마이그레이션
+  try {
+    const oldRaw = localStorage.getItem(STORE_KEY);
+    if (oldRaw) {
+      const oldState = JSON.parse(oldRaw);
+      const id = 'p_' + Date.now();
+      localStorage.setItem(profileKey(id), oldRaw);
+      const migrated = Object.assign({}, DEFAULT_APP, {
+        profiles: [{
+          id,
+          name: oldState.user?.name || '관리자',
+          role: 'admin',
+          createdAt: Date.now(),
+          lastActive: Date.now()
+        }],
+        currentId: id,
+        apiKey: oldState.settings?.apiKey || '',
+        ttsSpeed: oldState.settings?.ttsSpeed ?? 0.9
+      });
+      localStorage.setItem(APP_KEY, JSON.stringify(migrated));
+      return migrated;
+    }
+  } catch (e) {}
+  return JSON.parse(JSON.stringify(DEFAULT_APP));
+}
+
+function saveApp() {
+  localStorage.setItem(APP_KEY, JSON.stringify(app));
+}
+
+function loadState() {
+  if (!app || !app.currentId) return JSON.parse(JSON.stringify(DEFAULT_STATE));
+  try {
+    const raw = localStorage.getItem(profileKey(app.currentId));
+    const merged = deepMerge(JSON.parse(JSON.stringify(DEFAULT_STATE)), raw ? JSON.parse(raw) : {});
+    // 공용 API 키 주입 (회원·관리자 동일)
+    merged.settings.apiKey = app.apiKey || '';
+    merged.settings.ttsSpeed = app.ttsSpeed ?? 0.9;
+    return merged;
+  } catch (e) {
     return JSON.parse(JSON.stringify(DEFAULT_STATE));
   }
 }
-function saveState() { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+
+function saveState() {
+  if (!app || !app.currentId) return;
+  // 설정에서 API 키 편집 시 app.apiKey로 끌어올림 (관리자만)
+  const me = app.profiles.find(p => p.id === app.currentId);
+  if (me && me.role === 'admin' && state.settings.apiKey !== app.apiKey) {
+    app.apiKey = state.settings.apiKey || '';
+    saveApp();
+  }
+  if (me) {
+    me.lastActive = Date.now();
+    saveApp();
+  }
+  localStorage.setItem(profileKey(app.currentId), JSON.stringify(state));
+}
+
+function currentProfile() {
+  if (!app.currentId) return null;
+  return app.profiles.find(p => p.id === app.currentId) || null;
+}
+function isAdmin() {
+  const p = currentProfile();
+  return p && p.role === 'admin';
+}
 function deepMerge(base, override) {
   for (const k in override) {
     if (override[k] && typeof override[k] === 'object' && !Array.isArray(override[k]))
@@ -1498,6 +1698,21 @@ function renderTopbar() {
 }
 
 function render() {
+  // 멀티 프로필 라우팅 — 가장 먼저 검사
+  if (!app.profiles || app.profiles.length === 0) {
+    setChrome(false, false);
+    document.getElementById('main').scrollTop = 0;
+    return renderProfileCreate(true /* 첫 관리자 */);
+  }
+  if (activeScreen === 'profile-picker' || !app.currentId) {
+    setChrome(false, false);
+    document.getElementById('main').scrollTop = 0;
+    return renderProfilePicker();
+  }
+  if (activeScreen === 'profile-create')  { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderProfileCreate(false); }
+  if (activeScreen === 'admin-login')     { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderAdminLogin(); }
+  if (activeScreen === 'admin')           { setChrome(true, false);  document.getElementById('main').scrollTop = 0; renderTopbar(); return renderAdmin(); }
+
   tickHearts();
   renderTopbar();
   const main = document.getElementById('main');
@@ -3129,6 +3344,10 @@ function renderLibrary() {
 
 /* ---------- SETTINGS ---------- */
 function renderSettings() {
+  const me = currentProfile();
+  const admin = isAdmin();
+  const apiKeyMasked = app.apiKey ? `••••••${app.apiKey.slice(-4)}` : '(관리자 미설정)';
+
   document.getElementById('main').innerHTML = `
     <div style="display:flex; align-items:center; gap:14px; margin-bottom: 16px">
       <button class="close-btn" onclick="nav('profile')">
@@ -3137,11 +3356,31 @@ function renderSettings() {
       <h2 style="margin:0">설정</h2>
     </div>
 
+    <div class="card" style="margin-bottom:14px">
+      <h3 style="margin-bottom: 10px">👤 현재 프로필</h3>
+      <div style="display:flex; align-items:center; gap:12px">
+        <div style="width:44px; height:44px; border-radius:50%; background:${admin ? 'var(--purple)' : 'var(--accent)'}; color:white; display:flex; align-items:center; justify-content:center; font-family:var(--serif); font-weight:700; font-size:20px">${escapeHtml(avatarChar(me?.name || ''))}</div>
+        <div style="flex:1">
+          <div style="font-weight:700">${escapeHtml(me?.name || '?')}</div>
+          <div style="font-size:12px; color:var(--ink-soft)">${admin ? '👑 관리자' : '회원'}</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:14px">
+        <button class="btn btn-ghost" style="flex:1" onclick="nav('profile-picker')">↔ 프로필 전환</button>
+        ${admin ? `<button class="btn" style="flex:1" onclick="nav('admin')">👑 관리자 페이지</button>` : `<button class="btn btn-ghost" style="flex:1" onclick="nav('admin-login')">🔐 관리자 진입</button>`}
+      </div>
+    </div>
+
     <div class="card">
-      <h3 style="margin-bottom: 12px">🔑 Anthropic API 키</h3>
-      <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">AI 대화 기능을 사용하려면 API 키가 필요해요.<br>console.anthropic.com → API Keys에서 발급</p>
-      <input class="input" id="api-key-input" type="password" placeholder="sk-ant-..." value="${escapeAttr(state.settings.apiKey)}" />
-      <button class="btn" style="margin-top: 10px" onclick="saveApiKey()">저장</button>
+      <h3 style="margin-bottom: 12px">🔑 공용 AI API 키</h3>
+      ${admin ? `
+        <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">관리자만 편집 가능 — 모든 회원의 AI 기능에 사용돼요.</p>
+        <input class="input" id="api-key-input" type="password" placeholder="sk-ant-..." value="${escapeAttr(app.apiKey)}" />
+        <button class="btn" style="margin-top: 10px" onclick="saveApiKey()">저장</button>
+      ` : `
+        <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">관리자가 설정한 공용 키를 사용해요. 회원은 키를 볼 수 없습니다.</p>
+        <div style="background:var(--bg-muted); padding:12px 14px; border-radius:10px; font-family:monospace; color:var(--ink-soft)">${escapeHtml(apiKeyMasked)}</div>
+      `}
     </div>
 
     <div class="card" style="margin-top: 14px">
@@ -3171,20 +3410,23 @@ function renderSettings() {
     </div>
 
     <div class="card" style="margin-top: 14px">
-      <h3 style="margin-bottom: 12px; color: var(--danger)">⚠️ 데이터 초기화</h3>
-      <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">모든 진행 상황, XP, 단어 데이터가 사라져요.</p>
-      <button class="btn btn-danger" onclick="if(confirm('정말 모든 데이터를 삭제할까요?')) { localStorage.removeItem(STORE_KEY); state = loadState(); render(); }">전체 초기화</button>
+      <h3 style="margin-bottom: 12px; color: var(--danger)">⚠️ 내 데이터 초기화</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">내 프로필의 진행 상황만 초기화돼요. 다른 회원과 관리자 설정은 그대로.</p>
+      <button class="btn btn-danger" onclick="if(confirm('내 데이터를 모두 삭제할까요?')) { localStorage.removeItem(profileKey(app.currentId)); state = loadState(); render(); }">내 데이터 초기화</button>
     </div>
 
-    <p style="text-align:center; margin: 30px 0 20px; color:var(--ink-muted); font-size:12px">Lingo v2.0 · 개인용 영어 학습 설치형 웹앱</p>
+    <p style="text-align:center; margin: 30px 0 20px; color:var(--ink-muted); font-size:12px">Lingo v2.1 · 멀티 프로필 · 설치형 웹앱</p>
   `;
 }
 
 function saveApiKey() {
+  if (!isAdmin()) { toast('관리자만 변경할 수 있어요'); return; }
   const v = document.getElementById('api-key-input').value.trim();
+  app.apiKey = v;
+  saveApp();
   state.settings.apiKey = v;
   saveState();
-  toast(v ? '✅ API 키가 저장됐어요' : '🗑 API 키가 삭제됐어요');
+  toast(v ? '✅ 공용 API 키가 저장됐어요' : '🗑 API 키가 삭제됐어요');
 }
 
 /* ---------- UTILITIES ---------- */
@@ -5371,6 +5613,296 @@ async function generateProArticle(id) {
     toast('📰 읽기 탭에서 확인하세요');
     nav('reading');
   } catch (e) { console.error(e); toast('생성 실패'); }
+}
+
+/* =========================================================
+   MULTI-PROFILE / 회원 가입·전환·관리자 페이지
+   ========================================================= */
+function avatarChar(name) {
+  return (name || '?').trim().charAt(0).toUpperCase() || '?';
+}
+
+function renderProfilePicker() {
+  const cards = app.profiles.map(p => {
+    const isCurrent = p.id === app.currentId;
+    return `
+      <button class="profile-card" onclick="switchToProfile('${escapeAttr(p.id)}')">
+        <div class="avatar ${p.role === 'admin' ? 'admin' : ''}">${escapeHtml(avatarChar(p.name))}</div>
+        <div class="name">${escapeHtml(p.name)}${isCurrent ? ' (현재)' : ''}</div>
+        <span class="role ${p.role === 'admin' ? 'admin' : ''}">${p.role === 'admin' ? '👑 관리자' : '회원'}</span>
+      </button>
+    `;
+  }).join('');
+  const canAdd = app.profiles.length < MAX_PROFILES;
+  const addCard = canAdd ? `
+    <button class="profile-card add" onclick="startProfileCreate()">
+      <div class="plus">+</div>
+      <div class="name">회원 가입</div>
+      <span class="role" style="background:transparent">${app.profiles.length}/${MAX_PROFILES}명</span>
+    </button>
+  ` : `
+    <div class="profile-card add disabled">
+      <div class="plus">🔒</div>
+      <div class="name">정원 마감</div>
+      <span class="role">최대 ${MAX_PROFILES}명</span>
+    </div>
+  `;
+  document.getElementById('main').innerHTML = `
+    <div style="text-align:center; padding: 26px 0 14px">
+      <div style="font-size:46px">📚</div>
+      <h1 style="margin:8px 0 2px; font-family:var(--serif)">Lingo</h1>
+      <p class="subtitle">함께 영어를 익히는 친구를 골라주세요</p>
+    </div>
+
+    <div class="profile-grid">
+      ${cards}
+      ${addCard}
+    </div>
+
+    <div style="margin-top:14px">
+      <button class="btn btn-ghost" onclick="goAdminLogin()">👑 관리자 페이지</button>
+    </div>
+
+    <p style="font-size:12px; color:var(--ink-muted); margin-top:24px; text-align:center; line-height:1.5">
+      💡 같은 기기에서 ${MAX_PROFILES}명까지 함께 사용할 수 있어요.<br>각자의 진행률·단어장·통계가 따로 저장됩니다.<br>AI 기능은 관리자가 입력한 공용 API 키로 작동합니다.
+    </p>
+  `;
+}
+
+function startProfileCreate() {
+  activeScreen = 'profile-create';
+  render();
+}
+
+function renderProfileCreate(isFirstAdmin) {
+  const heading = isFirstAdmin ? '👑 첫 관리자로 가입' : '👋 회원 가입';
+  const desc = isFirstAdmin
+    ? `이 기기의 첫 사용자입니다. 관리자가 되어 다른 회원들의 진행을 볼 수 있어요. 가입 후 설정에서 API 키와 관리자 PIN(6자리)을 등록해주세요.`
+    : `이름을 입력하고 가입하면 영어 학습을 시작할 수 있어요. 가입 가능 인원: ${MAX_PROFILES - app.profiles.length}명 남음.`;
+  document.getElementById('main').innerHTML = `
+    <div style="padding: 30px 0 14px; text-align:center">
+      <div style="font-size:46px">${isFirstAdmin ? '👑' : '🌱'}</div>
+      <h1 style="margin:8px 0 2px; font-family:var(--serif)">${heading}</h1>
+      <p class="subtitle" style="line-height:1.5; max-width:340px; margin: 8px auto">${desc}</p>
+    </div>
+    <input id="new-profile-name" class="input" placeholder="이름 (예: 김민수)" maxlength="20" autocomplete="off" />
+    <p style="font-size:12px; color:var(--ink-muted); margin: 8px 0">한글·영어 가능, 최대 20자</p>
+    <button class="btn" style="margin-top: 18px" onclick="createProfileSubmit(${isFirstAdmin ? 'true' : 'false'})">가입하기</button>
+    ${!isFirstAdmin ? `<button class="btn btn-ghost" style="margin-top:8px" onclick="nav('profile-picker')">← 돌아가기</button>` : ''}
+  `;
+  setTimeout(() => document.getElementById('new-profile-name')?.focus(), 100);
+}
+
+function createProfileSubmit(isFirstAdmin) {
+  const input = document.getElementById('new-profile-name');
+  const name = (input?.value || '').trim();
+  if (!name) { toast('이름을 입력해주세요'); return; }
+  if (name.length > 20) { toast('이름이 너무 길어요'); return; }
+  if (app.profiles.length >= MAX_PROFILES) { toast('정원이 마감됐어요'); return; }
+  if (app.profiles.some(p => p.name === name)) { toast('이미 같은 이름이 있어요'); return; }
+
+  const id = 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const role = isFirstAdmin ? 'admin' : 'member';
+  app.profiles.push({ id, name, role, createdAt: Date.now(), lastActive: Date.now() });
+  app.currentId = id;
+  saveApp();
+  // 새 프로필은 fresh state — 이름 이미 받았으므로 온보딩 스킵하고 바로 CEFR 진단으로
+  state = JSON.parse(JSON.stringify(DEFAULT_STATE));
+  state.user.name = name;
+  state.user.onboarded = true;
+  state.settings.apiKey = app.apiKey || '';
+  saveState();
+  toast(`✅ ${name}님 가입 완료 · 레벨 진단을 시작해요`);
+  activeScreen = 'home';
+  render();
+}
+
+function switchToProfile(id) {
+  const p = app.profiles.find(x => x.id === id);
+  if (!p) return;
+  if (app.currentId && app.currentId !== id) {
+    // 현재 프로필 저장
+    saveState();
+  }
+  app.currentId = id;
+  p.lastActive = Date.now();
+  saveApp();
+  state = loadState();
+  activeScreen = 'home';
+  toast(`👤 ${p.name}님으로 전환`);
+  render();
+}
+
+function goAdminLogin() {
+  activeScreen = 'admin-login';
+  render();
+}
+
+function renderAdminLogin() {
+  const admin = app.profiles.find(p => p.role === 'admin');
+  const setupMode = !app.adminPin; // PIN 미설정 시 설정 모드
+  document.getElementById('main').innerHTML = `
+    <div style="padding: 30px 0 14px; text-align:center">
+      <div style="font-size:46px">${setupMode ? '🔧' : '🔐'}</div>
+      <h1 style="margin:8px 0 2px; font-family:var(--serif)">${setupMode ? '관리자 PIN 설정' : '관리자 로그인'}</h1>
+      <p class="subtitle" style="margin-top:8px; line-height:1.5">${setupMode ? '관리자 페이지 진입용 6자리 PIN을 설정하세요.<br>회원들이 함부로 들어오지 못하게 합니다.' : '6자리 PIN을 입력하세요.'}</p>
+    </div>
+    <input id="admin-pin-input" class="pin-input" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••••" autocomplete="off" />
+    <button class="btn" style="margin-top:18px" onclick="submitAdminPin(${setupMode ? 'true' : 'false'})">
+      ${setupMode ? 'PIN 설정 후 로그인' : '로그인'}
+    </button>
+    <button class="btn btn-ghost" style="margin-top:8px" onclick="nav('profile-picker')">← 돌아가기</button>
+    ${admin && !setupMode ? `<p style="text-align:center; color:var(--ink-muted); font-size:12px; margin-top:24px">관리자: ${escapeHtml(admin.name)}</p>` : ''}
+  `;
+  setTimeout(() => document.getElementById('admin-pin-input')?.focus(), 100);
+}
+
+function submitAdminPin(setupMode) {
+  const v = (document.getElementById('admin-pin-input')?.value || '').trim();
+  if (!/^\d{6}$/.test(v)) { toast('6자리 숫자로 입력해주세요'); return; }
+  if (setupMode) {
+    app.adminPin = v;
+    saveApp();
+    toast('✅ PIN이 설정됐어요');
+  } else {
+    if (v !== app.adminPin) { toast('PIN이 일치하지 않아요'); return; }
+  }
+  activeScreen = 'admin';
+  render();
+}
+
+function renderAdmin() {
+  const admin = app.profiles.find(p => p.role === 'admin');
+  const others = app.profiles.filter(p => p.role !== 'admin');
+  const allRows = [admin, ...others].filter(Boolean).map(p => {
+    // 각 프로필 state 빠르게 읽기
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(profileKey(p.id)) || '{}'); } catch (e) {}
+    const xp = s?.stats?.xp || 0;
+    const streak = s?.stats?.streak || 0;
+    const lessons = s?.stats?.totalLessons || 0;
+    const words = Object.keys(s?.srs || {}).length;
+    const level = s?.user?.level || '-';
+    const onboarded = s?.user?.onboarded;
+    const lastActive = p.lastActive ? new Date(p.lastActive).toLocaleString('ko-KR') : '-';
+    const created = new Date(p.createdAt).toLocaleDateString('ko-KR');
+    return `
+      <div class="admin-row">
+        <div class="head">
+          <div class="avatar-sm ${p.role === 'admin' ? 'admin' : ''}">${escapeHtml(avatarChar(p.name))}</div>
+          <div class="name">${escapeHtml(p.name)} ${p.role === 'admin' ? '<span style="font-size:12px; color:var(--purple); margin-left:6px">👑</span>' : ''}</div>
+          <span style="font-size:11px; color:var(--ink-soft)">${escapeHtml(level)}</span>
+        </div>
+        <div style="font-size:11px; color:var(--ink-muted); margin-bottom:6px">
+          가입 ${created} · 최근 ${lastActive}${!onboarded ? ' · ⏳ 진단 전' : ''}
+        </div>
+        <div class="stats">
+          <div class="stat-mini"><div class="v">${xp}</div><div class="l">XP</div></div>
+          <div class="stat-mini"><div class="v">${streak}</div><div class="l">연속</div></div>
+          <div class="stat-mini"><div class="v">${lessons}</div><div class="l">레슨</div></div>
+          <div class="stat-mini"><div class="v">${words}</div><div class="l">단어</div></div>
+        </div>
+        <div class="actions">
+          <button onclick="switchToProfile('${escapeAttr(p.id)}')">전환</button>
+          ${p.role !== 'admin' ? `<button class="danger" onclick="adminResetMember('${escapeAttr(p.id)}')">데이터 초기화</button>` : ''}
+          ${p.role !== 'admin' ? `<button class="danger" onclick="adminDeleteMember('${escapeAttr(p.id)}')">탈퇴 처리</button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const apiKeyMasked = app.apiKey ? `••••••${app.apiKey.slice(-4)}` : '(미설정)';
+  document.getElementById('main').innerHTML = `
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px">
+      <button class="close-btn" onclick="nav('profile-picker')">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <h2 style="flex:1">👑 관리자 페이지</h2>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <h3 style="margin-bottom:10px">🔑 공용 AI 설정</h3>
+      <div style="display:flex; justify-content:space-between; padding: 4px 0; font-size:14px">
+        <span>회원 인원</span><strong>${app.profiles.length} / ${MAX_PROFILES}명</strong>
+      </div>
+      <div style="display:flex; justify-content:space-between; padding: 4px 0; font-size:14px">
+        <span>Anthropic API 키</span><strong style="font-family:monospace">${escapeHtml(apiKeyMasked)}</strong>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px">
+        <input id="admin-api-key" class="input" type="password" placeholder="새 API 키 입력 (sk-ant-...)" autocomplete="off" />
+        <button class="btn" style="width:auto; padding:14px 18px; text-transform:none; letter-spacing:0" onclick="adminSaveApiKey()">저장</button>
+      </div>
+      <p style="font-size:12px; color:var(--ink-muted); margin-top:8px; line-height:1.4">
+        이 키는 모든 회원의 AI 기능에 공용으로 사용돼요. 회원은 설정에서 키를 볼 수 없습니다.
+      </p>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <h3 style="margin-bottom:10px">🔐 관리자 PIN</h3>
+      <div style="display:flex; gap:8px">
+        <input id="admin-new-pin" class="input" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="새 PIN 6자리" />
+        <button class="btn" style="width:auto; padding:14px 18px; text-transform:none; letter-spacing:0" onclick="adminChangePin()">변경</button>
+      </div>
+    </div>
+
+    <h3 style="margin: 18px 0 10px">👥 회원 목록 (${app.profiles.length}명)</h3>
+    ${allRows || '<p style="color:var(--ink-muted); text-align:center; padding: 20px">회원이 없어요</p>'}
+
+    <button class="btn btn-ghost" style="margin-top:20px" onclick="adminLogout()">🚪 관리자 로그아웃</button>
+    <p style="text-align:center; font-size:11px; color:var(--ink-muted); margin: 14px 0">
+      ※ 로컬 저장 기반 — 이 기기 안에서만 회원 관리가 동작합니다.
+    </p>
+  `;
+}
+
+function adminSaveApiKey() {
+  const input = document.getElementById('admin-api-key');
+  const v = (input?.value || '').trim();
+  if (!v) { toast('키를 입력해주세요'); return; }
+  app.apiKey = v;
+  saveApp();
+  // 현재 state도 갱신
+  state.settings.apiKey = v;
+  saveState();
+  toast('✅ API 키가 저장됐어요');
+  render();
+}
+
+function adminChangePin() {
+  const input = document.getElementById('admin-new-pin');
+  const v = (input?.value || '').trim();
+  if (!/^\d{6}$/.test(v)) { toast('6자리 숫자로 입력해주세요'); return; }
+  app.adminPin = v;
+  saveApp();
+  toast('✅ PIN이 변경됐어요');
+  if (input) input.value = '';
+}
+
+function adminResetMember(id) {
+  const p = app.profiles.find(x => x.id === id);
+  if (!p) return;
+  if (!confirm(`${p.name}님의 학습 데이터를 모두 초기화할까요? (XP·단어·진행 모두 사라짐)`)) return;
+  localStorage.removeItem(profileKey(id));
+  toast(`🔄 ${p.name}님 데이터 초기화`);
+  render();
+}
+
+function adminDeleteMember(id) {
+  const p = app.profiles.find(x => x.id === id);
+  if (!p) return;
+  if (p.role === 'admin') { toast('관리자는 탈퇴 처리할 수 없어요'); return; }
+  if (!confirm(`${p.name}님을 회원에서 제외할까요? 학습 데이터도 삭제됩니다.`)) return;
+  localStorage.removeItem(profileKey(id));
+  app.profiles = app.profiles.filter(x => x.id !== id);
+  if (app.currentId === id) app.currentId = null;
+  saveApp();
+  toast(`🗑 ${p.name}님 탈퇴 처리`);
+  render();
+}
+
+function adminLogout() {
+  activeScreen = 'profile-picker';
+  render();
 }
 
 /* ---------- INIT ---------- */
