@@ -1963,11 +1963,22 @@ function renderAssessment() {
 }
 
 function shuffleAssessment() {
-  // Take 3 from each level, shuffled within level — adaptive ish
+  // 레벨별로 3문항씩 뽑고, 각 문항의 보기 순서도 무작위로 섞어 정답 위치 분산
   const byLevel = { A1:[], A2:[], B1:[], B2:[] };
   ASSESSMENT_BANK.forEach(q => byLevel[q.level].push(q));
   Object.values(byLevel).forEach(arr => arr.sort(() => Math.random() - 0.5));
-  return [...byLevel.A1.slice(0,3), ...byLevel.A2.slice(0,3), ...byLevel.B1.slice(0,3), ...byLevel.B2.slice(0,3)];
+  const picked = [...byLevel.A1.slice(0,3), ...byLevel.A2.slice(0,3), ...byLevel.B1.slice(0,3), ...byLevel.B2.slice(0,3)];
+  // 각 문제의 보기를 셔플하면서 answer 인덱스 재매핑
+  return picked.map(q => {
+    const correctText = q.choices[q.answer];
+    const shuffledChoices = [...q.choices].sort(() => Math.random() - 0.5);
+    return {
+      level: q.level,
+      prompt: q.prompt,
+      choices: shuffledChoices,
+      answer: shuffledChoices.indexOf(correctText)
+    };
+  });
 }
 
 function answerAssessment(choiceIdx) {
