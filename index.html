@@ -330,13 +330,14 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: 34px;
     position: relative;
+    padding: 6px 0 22px;
   }
   .lesson-node {
     position: relative;
-    width: 78px;
-    height: 78px;
+    width: 74px;
+    height: 74px;
     border-radius: 50%;
     background: var(--accent);
     color: white;
@@ -355,12 +356,12 @@
   .lesson-node.current::after {
     content: '시작';
     position: absolute;
-    bottom: -32px;
+    bottom: -22px;
     left: 50%;
     transform: translateX(-50%);
     background: white;
     color: var(--accent);
-    padding: 4px 12px;
+    padding: 3px 10px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 700;
@@ -368,13 +369,23 @@
     box-shadow: 0 2px 0 var(--accent);
     white-space: nowrap;
   }
-  .lesson-offset-1 { margin-left: 50px; }
-  .lesson-offset-2 { margin-left: 70px; }
-  .lesson-offset-3 { margin-left: 50px; }
+  /* zig-zag 경로: 가운데 → 오른쪽 → 오른쪽 → 가운데 → 왼쪽 → 왼쪽 (5 레슨이면 가운데→오→가운데→왼→가운데 순으로 보임) */
+  .lesson-offset-0 { margin-left: 0; }
+  .lesson-offset-1 { margin-left: 44px; }
+  .lesson-offset-2 { margin-left: 66px; }
+  .lesson-offset-3 { margin-left: 44px; }
   .lesson-offset-4 { margin-left: 0; }
-  .lesson-offset-5 { margin-left: -50px; }
-  .lesson-offset-6 { margin-left: -70px; }
-  .lesson-offset-7 { margin-left: -50px; }
+  .lesson-offset-5 { margin-left: -44px; }
+  .lesson-offset-6 { margin-left: -66px; }
+  .lesson-offset-7 { margin-left: -44px; }
+  @media (max-width: 380px) {
+    .lesson-offset-1, .lesson-offset-5 { margin-left: 32px; }
+    .lesson-offset-2, .lesson-offset-6 { margin-left: 48px; }
+    .lesson-offset-3, .lesson-offset-7 { margin-left: 32px; }
+    .lesson-offset-5 { margin-left: -32px; }
+    .lesson-offset-6 { margin-left: -48px; }
+    .lesson-offset-7 { margin-left: -32px; }
+  }
 
   /* === Lesson screen === */
   .lesson-screen { padding: 0; }
