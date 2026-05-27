@@ -29,7 +29,8 @@ self.addEventListener('fetch', e => {
     url.hostname.includes('anthropic.com') ||
     url.hostname.includes('dictionaryapi.dev') ||
     url.hostname.includes('gutendex.com') ||
-    url.hostname.includes('gutenberg.org')
+    url.hostname.includes('gutenberg.org') ||
+    url.hostname.includes('bible-api.com')
   ) return;
 
   // 캐시 우선, 실패 시 네트워크, 그 응답을 캐시에 저장 (폰트, 본 앱 파일 위주)

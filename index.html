@@ -1043,6 +1043,75 @@
   .media-item .keywords { font-size: 12px; color: var(--ink-soft); }
   .media-item .keywords strong { color: var(--accent-dark); font-weight: 700; }
 
+  /* === Bible / 오늘의 말씀 === */
+  .verse-card {
+    background: linear-gradient(135deg, #fff 0%, #f5ede0 100%);
+    border: 2px solid var(--gold);
+    border-radius: var(--r-lg);
+    padding: 22px 20px;
+    margin: 14px 0 18px;
+    box-shadow: 0 4px 0 #d49b1a;
+  }
+  .verse-ref {
+    display: inline-block;
+    background: var(--accent);
+    color: white;
+    padding: 4px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: var(--sans);
+    letter-spacing: 0.05em;
+    margin-bottom: 12px;
+  }
+  .verse-text {
+    font-family: var(--serif);
+    font-size: 19px;
+    line-height: 1.7;
+    color: var(--ink);
+    margin-bottom: 8px;
+  }
+  .verse-translation {
+    font-size: 12px;
+    color: var(--ink-muted);
+    text-align: right;
+    font-style: italic;
+  }
+  .verse-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+  }
+  .verse-actions button {
+    flex: 1;
+    padding: 10px;
+    border: 2px solid var(--line);
+    background: var(--bg-card);
+    border-radius: 10px;
+    font-weight: 600;
+    font-family: var(--sans);
+    font-size: 13px;
+    cursor: pointer;
+    min-width: 100px;
+  }
+  .verse-actions button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+  .verse-vocab-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .verse-vocab-item:last-child { border-bottom: none; }
+  .verse-vocab-item .word { font-weight: 700; flex-shrink: 0; min-width: 90px; }
+  .verse-vocab-item .meaning { flex: 1; font-size: 14px; color: var(--ink-soft); }
+  .verse-vocab-item .save-btn {
+    background: var(--bg-muted); border: none; padding: 5px 10px; border-radius: 6px;
+    font-size: 12px; font-weight: 700; cursor: pointer; flex-shrink: 0;
+  }
+  .verse-vocab-item .save-btn.saved { background: var(--success); color: white; }
+
   /* === Toast 강화 === */
   .toast-big {
     position: fixed;
@@ -1138,6 +1207,7 @@ const DEFAULT_STATE = {
   wordGame: { stagesCleared: {}, highScore: 0, totalPlays: 0 }, // stagesCleared: { stageId: stars 1-3 }
   grammarProgress: {}, // { grammarId: { mastered: bool, lastReview: ts, score: 0-100 } }
   mediaSeen: {}, // { mediaId: { addedAt, notes } }
+  bible: { lastReadDate: null, savedVerses: [], readDays: 0, verseCache: {}, explainCache: {}, cursor: { bookIdx: 0, chapter: 1, verse: 1 } }, // 매일 3구절씩 순차 묵상
   settings: { ttsSpeed: 0.9, apiKey: '' }
 };
 
@@ -1347,6 +1417,8 @@ function render() {
     case 'wordgame-play': return renderWordGamePlay();
     case 'media': return renderMedia();
     case 'media-detail': return renderMediaDetail();
+    case 'bible': return renderBible();
+    case 'bible-saved': return renderBibleSaved();
     default: nav('home');
   }
 }
@@ -1561,10 +1633,10 @@ function renderHome() {
         <span class="title">미디어 학습</span>
         <span class="desc">드라마·영화·노래·동화로</span>
       </button>
-      <button class="hub-card gold" onclick="nav('chat')">
-        <span class="icon">💬</span>
-        <span class="title">AI 회화</span>
-        <span class="desc">Claude와 1:1 영어 대화</span>
+      <button class="hub-card gold" onclick="nav('bible')">
+        <span class="icon">📖</span>
+        <span class="title">오늘의 말씀</span>
+        <span class="desc">매일 한 구절 · AI 풀이·단어</span>
       </button>
     </div>
 
@@ -4147,6 +4219,419 @@ function renderMediaDetail() {
       <button class="btn">${m._tab === 'song' || m._tab === 'fairytale' || m._tab === 'movie' || m._tab === 'drama' ? '🔗 영상/원문 보러가기' : '🔗 자세히 보기'}</button>
     </a>
     ${m._tab === 'song' ? '<p style="text-align:center; color:var(--ink-muted); font-size:12px; margin-top:10px">YouTube에서 자막을 켜고 따라부르세요</p>' : ''}
+  `;
+}
+
+/* =========================================================
+   BIBLE / 오늘의 말씀 — 창세기 1:1부터 매일 3구절씩 순차 묵상
+   본문(WEB) + AI 한국어 번역 + 의미 + 단어 + 문법
+   ========================================================= */
+const BIBLE_BOOKS = [
+  // [영문명(API용), 한글명, 장 수]
+  ['Genesis','창세기',50],['Exodus','출애굽기',40],['Leviticus','레위기',27],['Numbers','민수기',36],['Deuteronomy','신명기',34],
+  ['Joshua','여호수아',24],['Judges','사사기',21],['Ruth','룻기',4],
+  ['1 Samuel','사무엘상',31],['2 Samuel','사무엘하',24],['1 Kings','열왕기상',22],['2 Kings','열왕기하',25],
+  ['1 Chronicles','역대상',29],['2 Chronicles','역대하',36],['Ezra','에스라',10],['Nehemiah','느헤미야',13],['Esther','에스더',10],
+  ['Job','욥기',42],['Psalms','시편',150],['Proverbs','잠언',31],['Ecclesiastes','전도서',12],['Song of Solomon','아가',8],
+  ['Isaiah','이사야',66],['Jeremiah','예레미야',52],['Lamentations','예레미야애가',5],['Ezekiel','에스겔',48],['Daniel','다니엘',12],
+  ['Hosea','호세아',14],['Joel','요엘',3],['Amos','아모스',9],['Obadiah','오바댜',1],['Jonah','요나',4],
+  ['Micah','미가',7],['Nahum','나훔',3],['Habakkuk','하박국',3],['Zephaniah','스바냐',3],['Haggai','학개',2],
+  ['Zechariah','스가랴',14],['Malachi','말라기',4],
+  ['Matthew','마태복음',28],['Mark','마가복음',16],['Luke','누가복음',24],['John','요한복음',21],['Acts','사도행전',28],
+  ['Romans','로마서',16],['1 Corinthians','고린도전서',16],['2 Corinthians','고린도후서',13],['Galatians','갈라디아서',6],
+  ['Ephesians','에베소서',6],['Philippians','빌립보서',4],['Colossians','골로새서',4],
+  ['1 Thessalonians','데살로니가전서',5],['2 Thessalonians','데살로니가후서',3],
+  ['1 Timothy','디모데전서',6],['2 Timothy','디모데후서',4],['Titus','디도서',3],['Philemon','빌레몬서',1],
+  ['Hebrews','히브리서',13],['James','야고보서',5],['1 Peter','베드로전서',5],['2 Peter','베드로후서',3],
+  ['1 John','요한일서',5],['2 John','요한이서',1],['3 John','요한삼서',1],['Jude','유다서',1],['Revelation','요한계시록',22]
+];
+const VERSES_PER_DAY = 3;
+
+function curBook() { return BIBLE_BOOKS[state.bible.cursor.bookIdx] || BIBLE_BOOKS[0]; }
+function curRef() {
+  const [name] = curBook();
+  const c = state.bible.cursor;
+  const end = c.verse + VERSES_PER_DAY - 1;
+  return `${name} ${c.chapter}:${c.verse}-${end}`;
+}
+function curRefKo() {
+  const [, ko] = curBook();
+  const c = state.bible.cursor;
+  const end = c.verse + VERSES_PER_DAY - 1;
+  return `${ko} ${c.chapter}장 ${c.verse}-${end}절`;
+}
+function bibleGatewayUrl(ref, version = 'NIV') {
+  return `https://www.biblegateway.com/passage/?search=${encodeURIComponent(ref)}&version=${version}`;
+}
+
+// 다음 3구절로 이동 — fetch 결과(실제 verse 수)를 보고 챕터/책 전환
+function advanceCursor(fetchedVerses) {
+  const c = state.bible.cursor;
+  if (!fetchedVerses || fetchedVerses.length === 0) {
+    // 빈 응답 — 다음 장으로
+    rollChapter();
+    return;
+  }
+  if (fetchedVerses.length < VERSES_PER_DAY) {
+    // 장이 끝남 — 다음 장
+    rollChapter();
+  } else {
+    // 정상 — 3절 뒤로
+    const last = fetchedVerses[fetchedVerses.length - 1];
+    c.verse = last.verse + 1;
+  }
+  saveState();
+}
+
+function rollChapter() {
+  const c = state.bible.cursor;
+  const [, , chapters] = curBook();
+  c.chapter += 1;
+  c.verse = 1;
+  if (c.chapter > chapters) {
+    c.bookIdx += 1;
+    c.chapter = 1;
+    if (c.bookIdx >= BIBLE_BOOKS.length) {
+      c.bookIdx = 0; // 처음부터 다시
+    }
+  }
+  saveState();
+}
+
+async function fetchPassage(ref) {
+  const cache = state.bible.verseCache || {};
+  if (cache[ref]) return cache[ref];
+  try {
+    const url = `https://bible-api.com/${encodeURIComponent(ref)}?translation=web`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('API ' + res.status);
+    const data = await res.json();
+    const result = {
+      text: (data.text || '').trim(),
+      verses: data.verses || [],
+      translation: data.translation_name || 'World English Bible',
+      fetchedAt: Date.now()
+    };
+    state.bible.verseCache = state.bible.verseCache || {};
+    state.bible.verseCache[ref] = result;
+    const keys = Object.keys(state.bible.verseCache);
+    if (keys.length > 80) delete state.bible.verseCache[keys[0]];
+    saveState();
+    return result;
+  } catch (e) {
+    console.warn('fetchPassage failed', e);
+    return null;
+  }
+}
+
+async function renderBible() {
+  const todayStr = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+  const tk = todayKey();
+  const savedCount = (state.bible.savedVerses || []).length;
+  const readDays = state.bible.readDays || 0;
+
+  // 새 날이면 cursor 진행 (이미 어제 본 3구절 다음으로)
+  const isNewDay = state.bible.lastReadDate && state.bible.lastReadDate !== tk;
+  if (isNewDay) {
+    // 어제까지 본 마지막 응답으로 이미 advance 됐을 것이므로 추가 동작 없음 — 묵상일만 갱신
+  }
+
+  const ref = curRef();
+  const refKo = curRefKo();
+
+  // 로딩 화면
+  document.getElementById('main').innerHTML = `
+    <h2 style="margin-bottom:4px">📖 오늘의 말씀</h2>
+    <p class="subtitle" style="margin-bottom:14px">${todayStr} · 매일 ${VERSES_PER_DAY}구절씩 순차 묵상</p>
+
+    <div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap">
+      <span class="rank-badge">📅 ${readDays}일 묵상</span>
+      <span class="rank-badge" style="background:var(--accent-soft);border-color:var(--accent);color:var(--accent-dark);cursor:pointer" onclick="nav('bible-saved')">⭐ 저장 ${savedCount}개</span>
+    </div>
+
+    <div class="verse-card">
+      <span class="verse-ref">${escapeHtml(refKo)}</span>
+      <div class="verse-text" id="verse-text-slot">
+        <span style="color:var(--ink-muted)">⏳ 본문 불러오는 중...</span>
+      </div>
+      <div class="verse-translation">— WEB (퍼블릭 도메인 · ${escapeHtml(ref)})</div>
+    </div>
+
+    <div id="verse-actions-slot"></div>
+    <div id="verse-explain-slot"></div>
+  `;
+
+  const passage = await fetchPassage(ref);
+  const slot = document.getElementById('verse-text-slot');
+  if (!slot) return;
+  if (!passage || !passage.text) {
+    // 본문 못 받음 → 장 끝일 수 있으니 다음 장 시도
+    rollChapter();
+    const ref2 = curRef();
+    const p2 = await fetchPassage(ref2);
+    if (p2 && p2.text) {
+      // 재렌더
+      return renderBible();
+    }
+    slot.innerHTML = '<span style="color:var(--danger)">⚠️ 본문을 불러오지 못했어요. 인터넷 연결을 확인하거나 잠시 후 다시 시도해주세요.</span>';
+    return;
+  }
+  // 절별로 줄바꿈해서 표시
+  const versesHtml = passage.verses.map(v => `
+    <div style="margin-bottom:10px">
+      <sup style="color:var(--accent); font-weight:700; font-size:13px; margin-right:4px">${v.verse}</sup>${makeTappableText(v.text.trim())}
+    </div>
+  `).join('');
+  slot.innerHTML = versesHtml || makeTappableText(passage.text);
+
+  // 액션
+  const isSaved = (state.bible.savedVerses || []).some(s => s.ref === ref);
+  const actionsSlot = document.getElementById('verse-actions-slot');
+  actionsSlot.innerHTML = `
+    <div class="verse-actions">
+      <button class="primary" onclick="explainPassage('${escapeAttr(ref)}','${escapeAttr(refKo)}')">🤖 AI 풀이 (단어+문법)</button>
+      <button onclick="window.open('${bibleGatewayUrl(ref)}','_blank')">📖 NIV 원문</button>
+    </div>
+    <div class="verse-actions">
+      <button onclick="speakPassage()">🔊 읽어주기</button>
+      <button onclick="toggleSaveVerse('${escapeAttr(ref)}','${escapeAttr(refKo)}')">${isSaved ? '✅ 저장됨' : '⭐ 저장'}</button>
+      <button onclick="advanceToNext()">⏭ 다음 ${VERSES_PER_DAY}구절</button>
+    </div>
+    <p style="font-size:12px; color:var(--ink-muted); margin-top:14px; line-height:1.5">
+      💡 영어 단어를 탭하면 사전 / "AI 풀이"로 번역·의미·핵심 단어·문법 분석을 받아요.
+      <br>📖 NIV 원문은 BibleGateway 새 탭으로 열립니다 (저작권).
+    </p>
+  `;
+
+  // 묵상일 증가 (하루 한 번)
+  if (state.bible.lastReadDate !== tk) {
+    state.bible.lastReadDate = tk;
+    state.bible.readDays = (state.bible.readDays || 0) + 1;
+    state.stats.xp += 5;
+    saveState();
+    renderTopbar();
+    // 새 날 첫 진입 시 다음날을 위해 cursor 자동 진행은 "다음 3구절" 버튼 또는
+    // 자동: 풀이 완료 후 진행으로 변경 가능. 일단 수동(버튼).
+  }
+}
+
+function speakPassage() {
+  const txt = document.getElementById('verse-text-slot')?.innerText;
+  if (txt) speak(txt);
+}
+
+function advanceToNext() {
+  // 현재 fetch 결과를 기반으로 다음 위치 계산
+  const ref = curRef();
+  const cached = (state.bible.verseCache || {})[ref];
+  advanceCursor(cached?.verses || []);
+  renderBible();
+}
+
+function toggleSaveVerse(ref, refKo) {
+  state.bible.savedVerses = state.bible.savedVerses || [];
+  const i = state.bible.savedVerses.findIndex(s => s.ref === ref);
+  if (i >= 0) {
+    state.bible.savedVerses.splice(i, 1);
+    toast('저장 해제');
+  } else {
+    state.bible.savedVerses.push({ ref, refKo, savedAt: Date.now() });
+    toast('⭐ 저장했어요');
+  }
+  saveState();
+  renderBible();
+}
+
+async function explainPassage(ref, refKo) {
+  if (!state.settings.apiKey) {
+    toast('설정에서 Anthropic API 키를 먼저 입력해주세요');
+    return;
+  }
+  const slot = document.getElementById('verse-explain-slot');
+  if (!slot) return;
+  state.bible.explainCache = state.bible.explainCache || {};
+  if (state.bible.explainCache[ref]) {
+    return renderPassageExplain(state.bible.explainCache[ref], ref);
+  }
+  slot.innerHTML = `
+    <div class="card" style="margin-top:14px; text-align:center; padding:30px">
+      <div style="font-size:32px; margin-bottom:10px">🤖</div>
+      <p style="color:var(--ink-soft)">AI가 단어와 문법을 분석하고 있어요...</p>
+    </div>
+  `;
+  const passage = await fetchPassage(ref);
+  if (!passage) { slot.innerHTML = '<p style="color:var(--danger); text-align:center">본문을 못 불러왔어요</p>'; return; }
+  try {
+    const systemPrompt = `You are a Bible teacher who also helps Korean learners study English from scratch. Given a Bible passage (multiple verses), respond in JSON only (no markdown):
+{
+  "korean": "각 절을 순서대로 한국어로 자연스럽게 번역. 절 번호를 함께 표시: '1) ...', '2) ...', '3) ...'",
+  "meaning": "이 구절(들)의 전체 의미와 맥락을 한국어 4-6문장으로 따뜻하게 풀이",
+  "application": "오늘 삶에 적용할 점 1-2문장",
+  "vocab": [
+    { "word": "영단어 (원형)", "ko": "한국어 뜻", "pos": "품사 약어 (n/v/adj/adv/prep/conj 등)", "example": "그 단어를 쓴 다른 영어 예문" }
+  ],
+  "grammar": [
+    { "title": "문법 포인트 제목 (한국어, 예: 'be 동사 - was/were 과거형')", "explain": "왜 이 표현이 이렇게 쓰였는지 영어 초급자도 이해할 수 있게 한국어로 2-3문장 설명", "quote": "본문에서 그 문법이 쓰인 영어 문구 인용" }
+  ]
+}
+
+규칙:
+- vocab은 본문에서 가장 학습 가치 있는 단어 5-8개. 너무 기본적인 a, the, and 등은 제외.
+- grammar는 본문에서 실제로 사용된 문법 패턴 2-4개 골라서 설명 (예: 과거시제, 관계대명사, 수동태, 분사, 전치사구 등). 영어 초보자가 처음 배우는 입장이라 생각하고 친절하게.
+- 응답은 반드시 valid JSON 한 객체만.`;
+    const userMsg = `Passage reference: ${ref} (${refKo})\nFull text (WEB):\n${passage.text}\n\nIndividual verses:\n${passage.verses.map(v => `${v.verse}. ${v.text.trim()}`).join('\n')}`;
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': state.settings.apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2000,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMsg }]
+      })
+    });
+    if (!res.ok) { slot.innerHTML = '<p style="color:var(--danger); text-align:center">API 오류 — 설정에서 키를 확인하세요</p>'; return; }
+    const data = await res.json();
+    const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(text);
+    state.bible.explainCache[ref] = parsed;
+    const keys = Object.keys(state.bible.explainCache);
+    if (keys.length > 30) delete state.bible.explainCache[keys[0]];
+    state.stats.xp += 15;
+    saveState();
+    renderTopbar();
+    renderPassageExplain(parsed, ref);
+  } catch (e) {
+    console.error(e);
+    slot.innerHTML = '<p style="color:var(--danger); text-align:center">풀이를 분석할 수 없었어요. 다시 시도해주세요.</p>';
+  }
+}
+
+function renderPassageExplain(parsed, ref) {
+  const slot = document.getElementById('verse-explain-slot');
+  if (!slot) return;
+  const savedLower = (state.savedWords || []).map(s => s.word.toLowerCase());
+  const vocabHtml = (parsed.vocab || []).map(v => {
+    const isSaved = savedLower.includes((v.word || '').toLowerCase());
+    return `
+      <div class="verse-vocab-item">
+        <div class="word">${escapeHtml(v.word)}${v.pos ? `<div style="font-size:11px; color:var(--ink-muted); font-weight:600">${escapeHtml(v.pos)}</div>` : ''}</div>
+        <div class="meaning">
+          ${escapeHtml(v.ko || '')}
+          ${v.example ? `<div style="font-size:12px; color:var(--ink-muted); margin-top:3px; font-style:italic">"${escapeHtml(v.example)}"</div>` : ''}
+        </div>
+        <button class="save-btn ${isSaved ? 'saved' : ''}" onclick="saveBibleVocab('${escapeAttr(v.word)}','${escapeAttr(v.ko || '')}',this)">
+          ${isSaved ? '✓ 저장' : '+ 저장'}
+        </button>
+      </div>
+    `;
+  }).join('');
+  const grammarHtml = (parsed.grammar || []).map(g => `
+    <div class="grammar-section" style="margin-bottom:10px">
+      <h4 style="text-transform:none; letter-spacing:0; font-size:15px; color:var(--ink)">📐 ${escapeHtml(g.title || '')}</h4>
+      ${g.quote ? `<div style="background:var(--bg-muted); padding:8px 12px; border-left:3px solid var(--blue); border-radius:6px; font-style:italic; margin: 6px 0; font-size:14px">"${escapeHtml(g.quote)}"</div>` : ''}
+      <p style="line-height:1.6; font-size:14px">${escapeHtml(g.explain || '')}</p>
+    </div>
+  `).join('');
+  const koreanWithBreaks = escapeHtml(parsed.korean || '').replace(/(\d+\))/g, '<br><strong style="color:var(--accent)">$1</strong>').replace(/^<br>/, '');
+  slot.innerHTML = `
+    <div class="card" style="margin-top:14px">
+      <h3 style="font-family:var(--serif); margin-bottom:10px">📜 한국어 번역</h3>
+      <p style="line-height:1.8">${koreanWithBreaks}</p>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3 style="font-family:var(--serif); margin-bottom:10px">💡 구절 풀이</h3>
+      <p style="line-height:1.7">${escapeHtml(parsed.meaning || '')}</p>
+      ${parsed.application ? `<div style="margin-top:14px; padding:12px; background:var(--accent-soft); border-radius:10px"><strong style="color:var(--accent-dark); font-size:13px">오늘의 적용</strong><p style="margin-top:4px; line-height:1.6">${escapeHtml(parsed.application)}</p></div>` : ''}
+    </div>
+    <div class="card" style="margin-top:12px; padding:0; overflow:hidden">
+      <h3 style="font-family:var(--serif); padding:14px 16px 8px">🔑 핵심 어휘</h3>
+      ${vocabHtml || '<p style="padding:14px; color:var(--ink-muted)">단어가 없어요</p>'}
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3 style="font-family:var(--serif); margin-bottom:10px">🧩 문법 분석</h3>
+      ${grammarHtml || '<p style="color:var(--ink-muted)">문법 포인트가 없어요</p>'}
+    </div>
+  `;
+}
+
+function saveBibleVocab(word, ko, btn) {
+  state.savedWords = state.savedWords || [];
+  const idx = state.savedWords.findIndex(s => s.word.toLowerCase() === word.toLowerCase());
+  if (idx >= 0) {
+    toast('이미 저장된 단어예요');
+    if (btn) { btn.textContent = '✓ 저장'; btn.classList.add('saved'); }
+    return;
+  }
+  state.savedWords.push({ word, ko, definition: ko, phonetic: '', savedAt: Date.now() });
+  const key = word.toLowerCase();
+  state.srs[key] = state.srs[key] || { interval: 1, ease: 2.5, repetitions: 0, nextReview: Date.now() };
+  saveState();
+  if (btn) { btn.textContent = '✓ 저장'; btn.classList.add('saved'); }
+  toast(`⭐ "${word}" 단어장 추가`);
+}
+
+function renderBibleSaved() {
+  const list = state.bible.savedVerses || [];
+  const itemsHtml = list.length ? list.slice().reverse().map(s => `
+    <div class="media-item" onclick="openSavedVerse('${escapeAttr(s.ref)}','${escapeAttr(s.refKo)}')">
+      <div class="meta-row">
+        <span class="level-tag">${escapeHtml(s.refKo)}</span>
+        <span class="type-tag">${escapeHtml(s.ref)}</span>
+      </div>
+      <div class="desc">저장: ${new Date(s.savedAt).toLocaleDateString('ko-KR')}</div>
+    </div>
+  `).join('') : '<p style="text-align:center; color:var(--ink-muted); padding: 40px">아직 저장된 구절이 없어요</p>';
+  document.getElementById('main').innerHTML = `
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px">
+      <button class="close-btn" onclick="nav('bible')">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <h2 style="flex:1">⭐ 저장한 구절</h2>
+    </div>
+    ${itemsHtml}
+  `;
+}
+
+let savedVerseContext = null;
+async function openSavedVerse(ref, refKo) {
+  savedVerseContext = { ref, refKo };
+  document.getElementById('main').innerHTML = `
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px">
+      <button class="close-btn" onclick="nav('bible-saved')">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <h3 style="flex:1">${escapeHtml(refKo)}</h3>
+    </div>
+    <div class="verse-card">
+      <span class="verse-ref">${escapeHtml(refKo)}</span>
+      <div class="verse-text" id="verse-text-slot">⏳ 불러오는 중...</div>
+      <div class="verse-translation">— WEB · ${escapeHtml(ref)}</div>
+    </div>
+    <div id="verse-actions-slot"></div>
+    <div id="verse-explain-slot"></div>
+  `;
+  const passage = await fetchPassage(ref);
+  const slot = document.getElementById('verse-text-slot');
+  if (slot && passage) {
+    const versesHtml = passage.verses.map(v => `
+      <div style="margin-bottom:10px"><sup style="color:var(--accent); font-weight:700; font-size:13px; margin-right:4px">${v.verse}</sup>${makeTappableText(v.text.trim())}</div>
+    `).join('');
+    slot.innerHTML = versesHtml || makeTappableText(passage.text);
+  } else if (slot) {
+    slot.innerHTML = '<span style="color:var(--danger)">불러오지 못함</span>';
+  }
+  const actionsSlot = document.getElementById('verse-actions-slot');
+  actionsSlot.innerHTML = `
+    <div class="verse-actions">
+      <button class="primary" onclick="explainPassage('${escapeAttr(ref)}','${escapeAttr(refKo)}')">🤖 AI 풀이 (단어+문법)</button>
+      <button onclick="window.open('${bibleGatewayUrl(ref)}','_blank')">📖 NIV 원문</button>
+    </div>
   `;
 }
 
