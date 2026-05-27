@@ -1112,6 +1112,99 @@
   }
   .verse-vocab-item .save-btn.saved { background: var(--success); color: white; }
 
+  /* === Review banner (복습이 먼저) === */
+  .review-banner {
+    background: linear-gradient(135deg, var(--danger) 0%, #ff8074 100%);
+    color: white;
+    padding: 14px 16px;
+    border-radius: 14px;
+    margin-bottom: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 4px 0 #c12a36;
+  }
+  .review-banner:active { transform: translateY(2px); box-shadow: 0 2px 0 #c12a36; }
+  .review-banner .icon { font-size: 26px; }
+  .review-banner .info { flex: 1; }
+  .review-banner .info .ttl { font-weight: 800; font-size: 15px; }
+  .review-banner .info .desc { font-size: 12px; opacity: 0.95; }
+  .review-banner .cta { font-weight: 700; font-size: 13px; opacity: 0.95; }
+
+  /* === Vocab test === */
+  .vocab-test-stat {
+    display: flex; justify-content: space-around;
+    background: var(--bg-muted);
+    padding: 14px;
+    border-radius: 14px;
+    margin: 14px 0 18px;
+    text-align: center;
+  }
+  .vocab-test-stat .item .big { font-size: 22px; font-weight: 800; font-family: var(--serif); }
+  .vocab-test-stat .item .label { font-size: 11px; color: var(--ink-soft); }
+
+  .missed-card {
+    background: var(--danger-soft);
+    border: 2px solid var(--danger);
+    border-radius: 14px;
+    padding: 14px;
+    margin-bottom: 10px;
+  }
+  .missed-card .word { font-weight: 800; font-size: 18px; color: #991b1b; }
+  .missed-card .meaning { font-size: 14px; color: var(--ink); margin-top: 4px; }
+  .missed-card .example { font-size: 13px; color: var(--ink-soft); margin-top: 4px; font-style: italic; }
+
+  /* === Grammar glossary === */
+  .glossary-item {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--blue);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+  }
+  .glossary-item .term { font-weight: 800; font-size: 15px; }
+  .glossary-item .term .en { color: var(--ink-soft); font-weight: 600; margin-left: 6px; font-size: 13px; }
+  .glossary-item .def { font-size: 13px; color: var(--ink-soft); line-height: 1.5; margin-top: 4px; }
+  .glossary-item .ex { font-size: 12px; color: var(--accent-dark); margin-top: 4px; font-style: italic; }
+
+  /* === Pro domains === */
+  .pro-domain-card {
+    background: var(--bg-card);
+    border: 2px solid var(--line);
+    border-bottom-width: 4px;
+    border-radius: var(--r-md);
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .pro-domain-card:active { transform: translateY(2px); border-bottom-width: 2px; }
+  .pro-domain-card .icon { font-size: 28px; }
+  .pro-domain-card h4 { font-family: var(--sans); font-size: 15px; font-weight: 800; }
+  .pro-domain-card .one { font-size: 12px; color: var(--ink-soft); }
+
+  .pro-vocab-item {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 6px;
+  }
+  .pro-vocab-item .head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .pro-vocab-item .word { font-weight: 800; font-size: 15px; }
+  .pro-vocab-item .word .pos { color: var(--ink-muted); font-size: 11px; margin-left: 5px; font-weight: 600; }
+  .pro-vocab-item .ko { font-size: 14px; color: var(--ink-soft); margin-top: 2px; }
+  .pro-vocab-item .ex { font-size: 12px; color: var(--ink-muted); margin-top: 3px; font-style: italic; }
+  .pro-vocab-item .save-btn {
+    background: var(--bg-muted); border: none; padding: 5px 10px; border-radius: 6px;
+    font-size: 12px; font-weight: 700; cursor: pointer; flex-shrink: 0;
+  }
+  .pro-vocab-item .save-btn.saved { background: var(--success); color: white; }
+
   /* === Toast 강화 === */
   .toast-big {
     position: fixed;
@@ -1208,6 +1301,8 @@ const DEFAULT_STATE = {
   grammarProgress: {}, // { grammarId: { mastered: bool, lastReview: ts, score: 0-100 } }
   mediaSeen: {}, // { mediaId: { addedAt, notes } }
   bible: { lastReadDate: null, savedVerses: [], readDays: 0, verseCache: {}, explainCache: {}, cursor: { bookIdx: 0, chapter: 1, verse: 1 } }, // 매일 3구절씩 순차 묵상
+  vocabTest: { totalTests: 0, totalQuestions: 0, totalCorrect: 0, lastMissed: [], lastTestDate: null }, // 단어 외움 확인
+  profession: { generated: {} }, // 분야별 AI 확장 단어 캐시
   settings: { ttsSpeed: 0.9, apiKey: '' }
 };
 
@@ -1419,6 +1514,12 @@ function render() {
     case 'media-detail': return renderMediaDetail();
     case 'bible': return renderBible();
     case 'bible-saved': return renderBibleSaved();
+    case 'vocab-test': return renderVocabTest();
+    case 'vocab-test-play': return renderVocabTestPlay();
+    case 'vocab-test-result': return renderVocabTestResult();
+    case 'grammar-glossary': return renderGrammarGlossary();
+    case 'pro': return renderPro();
+    case 'pro-domain': return renderProDomain();
     default: nav('home');
   }
 }
@@ -1601,9 +1702,22 @@ function renderHome() {
       </div>`;
   });
 
+  const dueCount = Object.values(state.srs || {}).filter(c => c.nextReview <= Date.now()).length;
+  const reviewBannerHtml = dueCount > 0 ? `
+    <div class="review-banner" onclick="nav('vocab-test')">
+      <span class="icon">📚</span>
+      <div class="info">
+        <div class="ttl">복습이 먼저! 외울 단어 ${dueCount}개</div>
+        <div class="desc">새 학습 전에 단어 테스트로 점검해보세요</div>
+      </div>
+      <span class="cta">시작 →</span>
+    </div>
+  ` : '';
+
   document.getElementById('main').innerHTML = `
     <div class="greeting">${greeting}, <em>${escapeHtml(state.user.name)}</em>!</div>
 
+    ${reviewBannerHtml}
     ${renderAttendanceCard()}
 
     <div style="display:flex; gap:10px; margin-bottom: 16px">
@@ -1618,25 +1732,35 @@ function renderHome() {
     </div>
 
     <div class="hub-grid">
-      <button class="hub-card coral" onclick="nav('wordgame')">
-        <span class="icon">🎮</span>
-        <span class="title">단어 게임</span>
-        <span class="desc">매칭·스피드 퀴즈로 어휘 강화</span>
+      <button class="hub-card coral" onclick="nav('vocab-test')">
+        <span class="icon">📝</span>
+        <span class="title">단어 테스트</span>
+        <span class="desc">배운 단어 외웠는지 점검</span>
       </button>
       <button class="hub-card blue" onclick="nav('grammar')">
         <span class="icon">📐</span>
         <span class="title">문법 학습</span>
-        <span class="desc">기초부터 차근차근 · CEFR 단계별</span>
+        <span class="desc">용어 사전 + 단계별 강의</span>
+      </button>
+      <button class="hub-card coral" onclick="nav('wordgame')">
+        <span class="icon">🎮</span>
+        <span class="title">단어 게임</span>
+        <span class="desc">매칭 게임으로 어휘 강화</span>
+      </button>
+      <button class="hub-card purple" onclick="nav('pro')">
+        <span class="icon">💼</span>
+        <span class="title">전문 용어</span>
+        <span class="desc">비즈니스·무역·금융 등 8분야</span>
       </button>
       <button class="hub-card purple" onclick="nav('media')">
         <span class="icon">🎬</span>
         <span class="title">미디어 학습</span>
-        <span class="desc">드라마·영화·노래·동화로</span>
+        <span class="desc">드라마·영화·노래·동화</span>
       </button>
       <button class="hub-card gold" onclick="nav('bible')">
         <span class="icon">📖</span>
         <span class="title">오늘의 말씀</span>
-        <span class="desc">매일 한 구절 · AI 풀이·단어</span>
+        <span class="desc">매일 3구절 + 단어·문법</span>
       </button>
     </div>
 
@@ -3706,6 +3830,14 @@ function renderGrammar() {
   document.getElementById('main').innerHTML = `
     <h2 style="margin-bottom:6px">📐 문법 학습</h2>
     <p class="subtitle" style="margin-bottom:14px">기초부터 단계별로 · ${done}/${total} 완료</p>
+    <button class="hub-card blue" style="width:100%; margin-bottom:14px; flex-direction:row; align-items:center; gap:12px; min-height:auto; padding:12px 16px" onclick="nav('grammar-glossary')">
+      <span class="icon" style="font-size:24px">📚</span>
+      <div style="flex:1; text-align:left">
+        <div class="title">문법 용어 사전</div>
+        <div class="desc">명사·동사·전치사·시제 등 30+ 용어 한국어 정의</div>
+      </div>
+      <span style="font-size:20px">→</span>
+    </button>
     <div style="background:var(--bg-muted); padding:12px 14px; border-radius:12px; font-size:13px; line-height:1.5; margin-bottom:18px">
       💡 각 문법은 <strong>뜻 → 어순 → 자세한 설명 → 예문 3개 → 3문제 퀴즈</strong> 순서로 진행돼요. 퀴즈를 통과하면 ✅ 마스터 표시가 붙어요.
     </div>
@@ -4471,13 +4603,14 @@ async function explainPassage(ref, refKo) {
     { "word": "영단어 (원형)", "ko": "한국어 뜻", "pos": "품사 약어 (n/v/adj/adv/prep/conj 등)", "example": "그 단어를 쓴 다른 영어 예문" }
   ],
   "grammar": [
-    { "title": "문법 포인트 제목 (한국어, 예: 'be 동사 - was/were 과거형')", "explain": "왜 이 표현이 이렇게 쓰였는지 영어 초급자도 이해할 수 있게 한국어로 2-3문장 설명", "quote": "본문에서 그 문법이 쓰인 영어 문구 인용" }
+    { "title": "문법 포인트 제목 (한국어, 예: 'be 동사 - was/were 과거형')", "term": "사용한 문법 용어 (예: 과거시제, 전치사, 관계대명사 — 한 개)", "termDef": "그 용어가 무엇인지 1문장으로 한국어 정의 (예: '전치사 = 명사 앞에 놓여 위치/시간 관계를 나타내는 말')", "explain": "왜 이 표현이 이렇게 쓰였는지 영어 초급자도 이해할 수 있게 한국어로 2-3문장 설명", "quote": "본문에서 그 문법이 쓰인 영어 문구 인용" }
   ]
 }
 
 규칙:
 - vocab은 본문에서 가장 학습 가치 있는 단어 5-8개. 너무 기본적인 a, the, and 등은 제외.
 - grammar는 본문에서 실제로 사용된 문법 패턴 2-4개 골라서 설명 (예: 과거시제, 관계대명사, 수동태, 분사, 전치사구 등). 영어 초보자가 처음 배우는 입장이라 생각하고 친절하게.
+- 각 grammar 항목에 반드시 term(용어명)과 termDef(그 용어 뜻)를 포함. 영어 처음 배우는 사람도 "전치사가 뭐지?" 하면 그 자리에서 알게.
 - 응답은 반드시 valid JSON 한 객체만.`;
     const userMsg = `Passage reference: ${ref} (${refKo})\nFull text (WEB):\n${passage.text}\n\nIndividual verses:\n${passage.verses.map(v => `${v.verse}. ${v.text.trim()}`).join('\n')}`;
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -4534,7 +4667,13 @@ function renderPassageExplain(parsed, ref) {
   const grammarHtml = (parsed.grammar || []).map(g => `
     <div class="grammar-section" style="margin-bottom:10px">
       <h4 style="text-transform:none; letter-spacing:0; font-size:15px; color:var(--ink)">📐 ${escapeHtml(g.title || '')}</h4>
-      ${g.quote ? `<div style="background:var(--bg-muted); padding:8px 12px; border-left:3px solid var(--blue); border-radius:6px; font-style:italic; margin: 6px 0; font-size:14px">"${escapeHtml(g.quote)}"</div>` : ''}
+      ${g.term && g.termDef ? `
+        <div style="background:var(--blue-soft); border-left:3px solid var(--blue); padding:8px 12px; border-radius:6px; margin: 6px 0">
+          <div style="font-size:12px; color:var(--blue); font-weight:700; letter-spacing:0.05em">📚 용어: ${escapeHtml(g.term)}</div>
+          <div style="font-size:13px; margin-top:2px; line-height:1.5">${escapeHtml(g.termDef)}</div>
+        </div>
+      ` : ''}
+      ${g.quote ? `<div style="background:var(--bg-muted); padding:8px 12px; border-radius:6px; font-style:italic; margin: 6px 0; font-size:14px">"${escapeHtml(g.quote)}"</div>` : ''}
       <p style="line-height:1.6; font-size:14px">${escapeHtml(g.explain || '')}</p>
     </div>
   `).join('');
@@ -4633,6 +4772,594 @@ async function openSavedVerse(ref, refKo) {
       <button onclick="window.open('${bibleGatewayUrl(ref)}','_blank')">📖 NIV 원문</button>
     </div>
   `;
+}
+
+/* =========================================================
+   VOCAB TEST / 단어 외움 테스트 — 복습 우선
+   ========================================================= */
+function gatherTestWords(targetCount = 10) {
+  // 1) SRS due 단어 우선
+  const now = Date.now();
+  const srsEntries = Object.entries(state.srs || {});
+  const due = srsEntries.filter(([_, c]) => c.nextReview <= now).map(([k]) => k);
+  const others = srsEntries.filter(([_, c]) => c.nextReview > now).map(([k]) => k);
+  let pool = [...due];
+  if (pool.length < targetCount) {
+    pool = pool.concat(others.sort(() => Math.random() - 0.5));
+  }
+  // 2) 부족하면 savedWords 보충
+  if (pool.length < targetCount) {
+    const saved = (state.savedWords || []).map(s => s.word.toLowerCase());
+    saved.forEach(w => { if (!pool.includes(w)) pool.push(w); });
+  }
+  // 3) 부족하면 UNITS vocab 보충
+  if (pool.length < targetCount) {
+    UNITS.flatMap(u => u.vocab).forEach(v => {
+      const k = v.en.toLowerCase();
+      if (!pool.includes(k)) pool.push(k);
+    });
+  }
+  // 단어→{en, ko} 매핑
+  return pool.slice(0, targetCount).map(k => resolveWord(k)).filter(Boolean);
+}
+
+function resolveWord(key) {
+  // savedWords에서 먼저
+  const sv = (state.savedWords || []).find(s => s.word.toLowerCase() === key);
+  if (sv) return { en: sv.word, ko: sv.ko || sv.definition || '', srsKey: key };
+  // UNITS에서
+  for (const u of UNITS) {
+    const v = u.vocab.find(x => x.en.toLowerCase() === key);
+    if (v) return { en: v.en, ko: v.ko, srsKey: key };
+  }
+  return null;
+}
+
+let vtState = null;
+
+function renderVocabTest() {
+  const due = Object.values(state.srs || {}).filter(c => c.nextReview <= Date.now()).length;
+  const total = Object.keys(state.srs || {}).length;
+  const savedCount = (state.savedWords || []).length;
+  const totalAvailable = new Set([
+    ...Object.keys(state.srs || {}),
+    ...(state.savedWords || []).map(s => s.word.toLowerCase()),
+    ...UNITS.flatMap(u => u.vocab.map(v => v.en.toLowerCase()))
+  ]).size;
+  const tests = state.vocabTest.totalTests || 0;
+  const correctRate = (state.vocabTest.totalQuestions || 0) > 0
+    ? Math.round((state.vocabTest.totalCorrect / state.vocabTest.totalQuestions) * 100)
+    : 0;
+  const missed = state.vocabTest.lastMissed || [];
+
+  const missedHtml = missed.length ? `
+    <h3 style="margin: 18px 0 10px">❌ 지난 테스트에서 못 외운 단어</h3>
+    <p style="font-size:13px; color:var(--ink-soft); margin-bottom:10px">아래 단어들은 복습 큐에 다시 들어갔어요. 보고 익혀두세요.</p>
+    ${missed.map(m => `
+      <div class="missed-card">
+        <div class="word">${escapeHtml(m.en)}</div>
+        <div class="meaning">${escapeHtml(m.ko || '')}</div>
+      </div>
+    `).join('')}
+  ` : '';
+
+  document.getElementById('main').innerHTML = `
+    <h2 style="margin-bottom:6px">📝 단어 테스트</h2>
+    <p class="subtitle" style="margin-bottom:14px">10문제 영→한 객관식 · 복습 우선</p>
+
+    <div class="vocab-test-stat">
+      <div class="item"><div class="big" style="color:${due > 0 ? 'var(--danger)' : 'var(--success)'}">${due}</div><div class="label">오늘 복습할 단어</div></div>
+      <div class="item"><div class="big">${total}</div><div class="label">학습 중인 단어</div></div>
+      <div class="item"><div class="big">${tests}</div><div class="label">총 테스트</div></div>
+      <div class="item"><div class="big">${correctRate}%</div><div class="label">평균 정답률</div></div>
+    </div>
+
+    <div style="background:var(--bg-muted); padding:12px 14px; border-radius:12px; font-size:13px; line-height:1.5; margin-bottom:14px">
+      💡 <strong>복습이 먼저</strong>예요. 오늘 복습할 단어를 우선으로, 부족하면 학습 중인 단어로 채워서 10개를 뽑아요.
+      <br>틀린 단어는 SRS interval이 1일로 리셋되고 즉시 복습 큐에 들어갑니다.
+    </div>
+
+    <button class="btn" onclick="startVocabTest()" ${totalAvailable < 4 ? 'disabled' : ''}>
+      ${totalAvailable < 4 ? '단어가 충분치 않아요 (4개 이상 필요)' : '▶ 테스트 시작 (10문제)'}
+    </button>
+
+    ${missedHtml}
+  `;
+}
+
+function startVocabTest() {
+  const words = gatherTestWords(10);
+  if (words.length < 4) { toast('단어가 너무 적어요. 먼저 단어를 저장하거나 레슨을 진행하세요.'); return; }
+  const pool = words.slice();
+  // 오답 후보 풀 (틀린 보기용)
+  const allOthers = [
+    ...words,
+    ...UNITS.flatMap(u => u.vocab.map(v => ({ en: v.en, ko: v.ko, srsKey: v.en.toLowerCase() })))
+  ];
+  const questions = pool.map(target => {
+    const distractors = allOthers
+      .filter(x => x.en.toLowerCase() !== target.en.toLowerCase() && x.ko && x.ko !== target.ko)
+      .sort(() => Math.random() - 0.5).slice(0, 3);
+    const choices = [target.ko, ...distractors.map(d => d.ko)].sort(() => Math.random() - 0.5);
+    return {
+      en: target.en,
+      ko: target.ko,
+      srsKey: target.srsKey,
+      choices,
+      answerIdx: choices.indexOf(target.ko)
+    };
+  });
+  vtState = { questions, idx: 0, correct: 0, missed: [], answered: false, lastAnswer: -1 };
+  activeScreen = 'vocab-test-play';
+  render();
+}
+
+function renderVocabTestPlay() {
+  const s = vtState;
+  if (!s) return nav('vocab-test');
+  const q = s.questions[s.idx];
+  const choicesHtml = q.choices.map((c, i) => {
+    let cls = 'choice';
+    if (s.answered) {
+      if (i === q.answerIdx) cls += ' correct';
+      else if (i === s.lastAnswer) cls += ' wrong';
+    }
+    return `<button class="${cls}" onclick="answerVocabTest(${i})" ${s.answered ? 'disabled' : ''}>
+      <span class="choice-num">${i+1}</span><span>${escapeHtml(c)}</span>
+    </button>`;
+  }).join('');
+  document.getElementById('main').innerHTML = `
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px">
+      <button class="close-btn" onclick="if(confirm('테스트를 그만둘까요? 진행은 저장되지 않아요')) nav('vocab-test')">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+      <div class="progress-bar"><div class="progress-fill" style="width:${(s.idx / s.questions.length) * 100}%"></div></div>
+      <span style="font-weight:700; font-size:14px">${s.idx + 1}/${s.questions.length}</span>
+    </div>
+    <div class="question">
+      <div class="question-hint">VOCAB TEST · ${s.correct} 정답</div>
+      <div class="question-prompt">"${escapeHtml(q.en)}"의 뜻은?</div>
+      <button class="btn-ghost" style="margin-top:8px; padding:6px 12px; font-size:13px; width:auto" onclick="speak('${escapeAttr(q.en)}')">🔊 발음 듣기</button>
+    </div>
+    <div class="choices">${choicesHtml}</div>
+    ${s.answered ? `<button class="btn" onclick="nextVocabTest()">${s.idx + 1 < s.questions.length ? '다음 →' : '결과 보기'}</button>` : ''}
+  `;
+}
+
+function answerVocabTest(i) {
+  const s = vtState;
+  if (!s || s.answered) return;
+  const q = s.questions[s.idx];
+  s.answered = true;
+  s.lastAnswer = i;
+  if (i === q.answerIdx) {
+    s.correct++;
+    // SRS 정답 처리
+    updateSrs({ en: q.en, ko: q.ko }, true);
+  } else {
+    s.missed.push({ en: q.en, ko: q.ko, srsKey: q.srsKey });
+    // SRS 오답 — interval 1로 리셋, 즉시 복습 큐
+    const key = (q.srsKey || q.en.toLowerCase());
+    state.srs[key] = { interval: 1, ease: 2.5, repetitions: 0, nextReview: Date.now() };
+    saveState();
+  }
+  renderVocabTestPlay();
+}
+
+function nextVocabTest() {
+  const s = vtState;
+  if (s.idx + 1 < s.questions.length) {
+    s.idx++;
+    s.answered = false;
+    s.lastAnswer = -1;
+    renderVocabTestPlay();
+  } else {
+    // 결과 저장
+    state.vocabTest.totalTests = (state.vocabTest.totalTests || 0) + 1;
+    state.vocabTest.totalQuestions = (state.vocabTest.totalQuestions || 0) + s.questions.length;
+    state.vocabTest.totalCorrect = (state.vocabTest.totalCorrect || 0) + s.correct;
+    state.vocabTest.lastMissed = s.missed.slice();
+    state.vocabTest.lastTestDate = todayKey();
+    // 보상
+    state.stats.xp += s.correct * 4;
+    if (s.correct === s.questions.length) state.stats.gems = (state.stats.gems || 0) + 2;
+    saveState();
+    activeScreen = 'vocab-test-result';
+    render();
+    burstConfetti();
+  }
+}
+
+function renderVocabTestResult() {
+  const s = vtState;
+  if (!s) return nav('vocab-test');
+  const pct = Math.round((s.correct / s.questions.length) * 100);
+  const xpEarned = s.correct * 4;
+  const perfect = s.correct === s.questions.length;
+  const missedHtml = s.missed.map(m => `
+    <div class="missed-card">
+      <div class="word">${escapeHtml(m.en)}</div>
+      <div class="meaning">→ ${escapeHtml(m.ko || '뜻 모름')}</div>
+    </div>
+  `).join('');
+  document.getElementById('main').innerHTML = `
+    <div style="text-align:center; padding: 30px 0 20px">
+      <div style="font-size:72px">${perfect ? '🌟' : (pct >= 70 ? '👍' : '💪')}</div>
+      <h2 style="margin: 12px 0 6px">${perfect ? '만점!' : (pct >= 70 ? '잘했어요' : '다시 외워봐요')}</h2>
+      <p class="subtitle">${s.correct} / ${s.questions.length} 정답 (${pct}%)</p>
+      <p style="color:var(--accent); font-weight:700; margin-top:8px">+${xpEarned} XP${perfect ? ' · +2 💎' : ''}</p>
+    </div>
+
+    ${s.missed.length > 0 ? `
+      <h3 style="margin: 8px 0 8px; color:var(--danger)">❌ 못 외운 단어 ${s.missed.length}개</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-bottom:12px">이 단어들은 즉시 복습 큐에 들어갔어요. 아래에서 한 번 더 확인하세요.</p>
+      ${missedHtml}
+      <button class="btn" style="margin-top:12px" onclick="startVocabTest()">📚 못 외운 단어 다시 테스트</button>
+      <button class="btn btn-ghost" style="margin-top:8px" onclick="nav('vocab-test')">목록으로</button>
+    ` : `
+      <p style="text-align:center; color:var(--success); font-weight:700; margin: 20px 0">🎉 모든 단어를 정확히 외웠어요!</p>
+      <button class="btn" onclick="nav('home')">학습 계속하기</button>
+      <button class="btn btn-ghost" style="margin-top:8px" onclick="nav('vocab-test')">한 번 더 테스트</button>
+    `}
+  `;
+}
+
+/* =========================================================
+   GRAMMAR GLOSSARY / 문법 용어 사전
+   ========================================================= */
+const GRAMMAR_TERMS = [
+  { k: '명사', e: 'Noun (n.)', def: '사람·사물·장소·생각의 이름을 가리키는 말. 문장에서 주어나 목적어로 자주 쓰임.', ex: 'cat (고양이), love (사랑), Korea (한국), idea (생각)' },
+  { k: '동사', e: 'Verb (v.)', def: '동작이나 상태를 나타내는 말. 모든 영어 문장에는 동사가 꼭 하나는 있어야 함.', ex: 'run (달리다), be (~이다), have (가지다), study (공부하다)' },
+  { k: '형용사', e: 'Adjective (adj.)', def: '명사를 꾸며 어떤 명사인지 자세히 알려주는 말.', ex: 'big house (큰 집), happy day (행복한 날), red car (빨간 차)' },
+  { k: '부사', e: 'Adverb (adv.)', def: '동사·형용사·다른 부사 또는 문장 전체를 꾸미는 말. 대부분 -ly로 끝남.', ex: 'quickly (빨리), very happy (매우 행복한), often go (자주 간다)' },
+  { k: '전치사', e: 'Preposition (prep.)', def: '명사 앞에 놓여 시간·장소·방향·수단 등의 관계를 나타내는 말. 한국어로는 "~에, ~에서, ~으로" 같은 조사.', ex: 'in the room (방 안에), on Monday (월요일에), to school (학교로), by bus (버스로)' },
+  { k: '접속사', e: 'Conjunction (conj.)', def: '단어·구·절을 이어주는 말. and/but/or는 등위접속사, because/if/when은 종속접속사.', ex: 'tea and coffee, small but strong, because it rains' },
+  { k: '대명사', e: 'Pronoun (pron.)', def: '명사 대신 쓰는 말. 같은 명사 반복을 피해 글을 자연스럽게 만듦.', ex: 'I (나), you (너), he (그), she (그녀), it (그것), this (이것)' },
+  { k: '관사', e: 'Article', def: '명사 앞에 붙는 a/an/the. a/an = 처음 언급, the = 이미 알거나 유일한 것.', ex: 'a book (어떤 책 하나), the book (그 책)' },
+  { k: '조동사', e: 'Auxiliary verb', def: '본동사를 도와 시제·부정·의문·가능성 등을 표현. can/will/must/do/have/be 등.', ex: 'can swim (수영할 수 있다), will go (갈 것이다), have eaten (먹었다)' },
+  { k: '감탄사', e: 'Interjection', def: '감정·놀람·감탄을 표현하는 짧은 말.', ex: 'Oh! (오!), Wow! (와!), Ouch! (아야!)' },
+  { k: '주어', e: 'Subject (S)', def: '"누가/무엇이"에 해당. 문장의 주인공이자 동사의 행위자.', ex: '"She runs."에서 She가 주어' },
+  { k: '술어동사', e: 'Predicate verb (V)', def: '"~한다/~이다"에 해당. 주어가 무엇을 하거나 어떤 상태인지 말함.', ex: '"She runs."에서 runs가 동사' },
+  { k: '목적어', e: 'Object (O)', def: '동사가 미치는 대상. "무엇을/누구를"에 해당.', ex: '"I love you."에서 you가 목적어' },
+  { k: '보어', e: 'Complement (C)', def: '주어나 목적어를 보충 설명하는 말. 보통 형용사나 명사.', ex: '"She is happy."에서 happy가 주격보어' },
+  { k: '시제', e: 'Tense', def: '동사가 나타내는 시간. 현재 / 과거 / 미래 / 진행 / 완료 등.', ex: 'I eat (현재), I ate (과거), I will eat (미래), I am eating (현재진행), I have eaten (현재완료)' },
+  { k: '태', e: 'Voice', def: '능동(주어가 행위) vs 수동(주어가 당함).', ex: '능동: I eat the apple. / 수동: The apple is eaten by me.' },
+  { k: '능동태', e: 'Active voice', def: '주어가 직접 행위를 하는 표현.', ex: 'The dog bit the man. (개가 남자를 물었다)' },
+  { k: '수동태', e: 'Passive voice', def: '주어가 행위를 "당하는" 표현. be + 과거분사(p.p.).', ex: 'The man was bitten by the dog. (남자가 개에게 물렸다)' },
+  { k: '가정법', e: 'Subjunctive mood', def: '실제와 반대되거나 가능성을 가정하는 표현. 보통 "If ~"로 시작.', ex: 'If I were rich, I would travel. (내가 부자라면 여행할 텐데)' },
+  { k: '부정사', e: 'Infinitive', def: 'to + 동사원형. 명사·형용사·부사처럼 다양하게 쓰임.', ex: 'I want to go. (가고 싶다)' },
+  { k: '동명사', e: 'Gerund', def: '동사 + ing가 명사처럼 쓰이는 형태.', ex: 'I enjoy swimming. (수영하기를 즐긴다)' },
+  { k: '현재분사', e: 'Present participle', def: '동사 + ing가 형용사처럼 명사를 꾸미거나 진행형으로 쓰임.', ex: 'a sleeping baby (자고 있는 아기), I am working.' },
+  { k: '과거분사', e: 'Past participle', def: '동사의 p.p. 형태. 완료시제 / 수동태 / 형용사로 쓰임.', ex: 'broken window (깨진 창), I have finished.' },
+  { k: '관계대명사', e: 'Relative pronoun', def: '두 문장을 잇고 앞 명사를 자세히 설명. 사람=who, 사물=which, 둘다=that.', ex: 'The man who lives next door is kind.' },
+  { k: '구', e: 'Phrase', def: '주어+동사 없이 두 단어 이상이 모인 의미 단위.', ex: 'in the morning (전치사구), to study English (부정사구)' },
+  { k: '절', e: 'Clause', def: '주어+동사를 갖춘 의미 단위. 독립절은 혼자 문장이 되고, 종속절은 다른 절에 딸림.', ex: '"I think (독립절) that he is honest (종속절)."' },
+  { k: '가산명사', e: 'Countable noun', def: '셀 수 있는 명사. 단·복수가 있음 (a/an, -s 가능).', ex: 'apple → apples, book → books' },
+  { k: '불가산명사', e: 'Uncountable noun', def: '셀 수 없는 명사. 액체·재료·추상명사 등. -s 안 붙음.', ex: 'water, milk, information, advice' },
+  { k: '인칭', e: 'Person', def: '말하는 이(1인칭 I/we), 듣는 이(2인칭 you), 그 외(3인칭 he/she/it/they)의 구분.', ex: 'I (1인칭 단수), We (1인칭 복수)' },
+  { k: '수일치', e: 'Subject-verb agreement', def: '주어가 단수면 동사도 단수형, 복수면 복수형. (he eats / they eat)', ex: 'She likes coffee. / They like coffee.' },
+  { k: '도치', e: 'Inversion', def: '강조·의문·부정어 강조를 위해 동사와 주어 순서를 바꿈.', ex: 'Never have I seen such a thing. (그런 건 본 적이 없다)' },
+  { k: '비교급', e: 'Comparative', def: '두 대상을 비교할 때. 형용사 + -er 또는 more + 형용사.', ex: 'taller than me, more beautiful than her' },
+  { k: '최상급', e: 'Superlative', def: '셋 이상 중 "가장 ~한". the + 형용사 + -est 또는 the most + 형용사.', ex: 'the tallest, the most beautiful' }
+];
+
+function renderGrammarGlossary() {
+  const itemsHtml = GRAMMAR_TERMS.map(t => `
+    <div class="glossary-item">
+      <div class="term">${escapeHtml(t.k)}<span class="en">${escapeHtml(t.e)}</span></div>
+      <div class="def">${escapeHtml(t.def)}</div>
+      <div class="ex">예: ${escapeHtml(t.ex)}</div>
+    </div>
+  `).join('');
+  document.getElementById('main').innerHTML = `
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px">
+      <button class="close-btn" onclick="nav('grammar')">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <h2 style="flex:1">📚 문법 용어 사전</h2>
+    </div>
+    <p class="subtitle" style="margin-bottom:14px">${GRAMMAR_TERMS.length}개 핵심 용어 · 정의와 예문</p>
+    <div style="background:var(--bg-muted); padding:12px 14px; border-radius:12px; font-size:13px; line-height:1.5; margin-bottom:14px">
+      💡 문법 공부할 때 모르는 용어는 여기서 바로 확인하세요. 성경 풀이의 "문법 분석"에서 나오는 용어도 여기 다 있어요.
+    </div>
+    ${itemsHtml}
+  `;
+}
+
+/* =========================================================
+   PRO VOCAB / 전문 분야 용어 — 비즈니스·무역·금융 등 8분야
+   ========================================================= */
+const PRO_DOMAINS = [
+  { id: 'business', icon: '💼', name: '비즈니스', one: '회의·보고·협상·일정',
+    words: [
+      { en: 'agenda', pos: 'n.', ko: '안건, 회의 순서', ex: 'Let\'s move on to the next agenda item.' },
+      { en: 'deadline', pos: 'n.', ko: '마감일', ex: 'The deadline is next Friday.' },
+      { en: 'revenue', pos: 'n.', ko: '매출, 수익', ex: 'Q3 revenue grew by 15%.' },
+      { en: 'stakeholder', pos: 'n.', ko: '이해관계자', ex: 'We need to align with all stakeholders.' },
+      { en: 'proposal', pos: 'n.', ko: '제안서', ex: 'I\'ll send you the proposal by Monday.' },
+      { en: 'milestone', pos: 'n.', ko: '중간 목표', ex: 'We hit a major milestone this quarter.' },
+      { en: 'leverage', pos: 'v.', ko: '활용하다', ex: 'We can leverage our network to expand.' },
+      { en: 'follow up', pos: 'phr. v.', ko: '후속 조치하다', ex: 'I\'ll follow up with the client tomorrow.' },
+      { en: 'streamline', pos: 'v.', ko: '간소화하다', ex: 'We need to streamline our process.' },
+      { en: 'KPI', pos: 'abbr.', ko: '핵심 성과 지표 (Key Performance Indicator)', ex: 'What KPIs will we use to measure success?' },
+      { en: 'ROI', pos: 'abbr.', ko: '투자 수익률 (Return on Investment)', ex: 'The campaign had a strong ROI.' },
+      { en: 'synergy', pos: 'n.', ko: '시너지, 상승효과', ex: 'There\'s great synergy between our teams.' }
+    ]
+  },
+  { id: 'trade', icon: '🚢', name: '무역·국제거래', one: '수출입·인코텀즈·결제',
+    words: [
+      { en: 'export', pos: 'n./v.', ko: '수출(하다)', ex: 'We export electronics to 30 countries.' },
+      { en: 'import', pos: 'n./v.', ko: '수입(하다)', ex: 'Korea imports oil from the Middle East.' },
+      { en: 'tariff', pos: 'n.', ko: '관세', ex: 'The U.S. imposed a 25% tariff on steel.' },
+      { en: 'customs', pos: 'n.', ko: '세관', ex: 'Goods cleared customs yesterday.' },
+      { en: 'bill of lading (B/L)', pos: 'n.', ko: '선하증권 (해상화물 인수증)', ex: 'Send the original B/L to the bank.' },
+      { en: 'letter of credit (L/C)', pos: 'n.', ko: '신용장', ex: 'Payment is by irrevocable L/C at sight.' },
+      { en: 'FOB', pos: 'abbr.', ko: '본선인도조건 (Free On Board) - 선적 후 위험·비용이 매수인에게', ex: 'Price is FOB Busan port.' },
+      { en: 'CIF', pos: 'abbr.', ko: '운임·보험료 포함 인도 (Cost, Insurance, Freight)', ex: 'CIF Hamburg, USD 50/unit.' },
+      { en: 'Incoterms', pos: 'n.', ko: '국제상거래조건 (ICC가 정한 무역 거래 조건)', ex: 'We follow Incoterms 2020.' },
+      { en: 'HS code', pos: 'n.', ko: 'HS 품목분류 코드 (관세용)', ex: 'The HS code for laptops is 8471.30.' },
+      { en: 'freight forwarder', pos: 'n.', ko: '국제 운송 주선업자', ex: 'Our freight forwarder will handle shipping.' },
+      { en: 'demurrage', pos: 'n.', ko: '체선료 (체화료)', ex: 'Demurrage charges apply after 5 free days.' },
+      { en: 'consignee', pos: 'n.', ko: '수하인 (받는 사람)', ex: 'The consignee will pick up the goods.' }
+    ]
+  },
+  { id: 'finance', icon: '💰', name: '금융·투자', one: '주식·채권·재무·M&A',
+    words: [
+      { en: 'asset', pos: 'n.', ko: '자산', ex: 'Real estate is our largest asset.' },
+      { en: 'liability', pos: 'n.', ko: '부채', ex: 'The company reduced liabilities by 20%.' },
+      { en: 'equity', pos: 'n.', ko: '자본(금), 주식 지분', ex: 'They raised equity from VCs.' },
+      { en: 'dividend', pos: 'n.', ko: '배당금', ex: 'Apple pays a quarterly dividend.' },
+      { en: 'bond', pos: 'n.', ko: '채권', ex: 'Treasury bonds are considered safe.' },
+      { en: 'yield', pos: 'n./v.', ko: '수익률, 산출하다', ex: 'The bond yields 4% annually.' },
+      { en: 'portfolio', pos: 'n.', ko: '포트폴리오 (보유 자산 묶음)', ex: 'Diversify your portfolio.' },
+      { en: 'hedge', pos: 'v./n.', ko: '위험을 회피하다, 헷지', ex: 'They hedged against currency risk.' },
+      { en: 'M&A', pos: 'abbr.', ko: '인수합병 (Mergers and Acquisitions)', ex: 'The M&A deal closed last month.' },
+      { en: 'IPO', pos: 'abbr.', ko: '기업공개 (Initial Public Offering)', ex: 'Coupang had its IPO in 2021.' },
+      { en: 'EBITDA', pos: 'abbr.', ko: '이자·세금·감가상각 전 이익', ex: 'EBITDA margin is 25%.' },
+      { en: 'leverage', pos: 'n.', ko: '레버리지 (차입을 활용한 투자)', ex: 'High leverage increases both risk and return.' },
+      { en: 'liquidity', pos: 'n.', ko: '유동성 (현금화 용이성)', ex: 'The market has high liquidity.' }
+    ]
+  },
+  { id: 'it', icon: '💻', name: 'IT·기술', one: '개발·서버·데이터',
+    words: [
+      { en: 'deploy', pos: 'v.', ko: '배포하다, 출시하다', ex: 'We deploy new features every week.' },
+      { en: 'repository', pos: 'n.', ko: '저장소 (보통 Git repo)', ex: 'Push to the main repository.' },
+      { en: 'framework', pos: 'n.', ko: '프레임워크 (개발 골격)', ex: 'React is a popular framework.' },
+      { en: 'API', pos: 'abbr.', ko: '응용 프로그램 인터페이스 (Application Programming Interface)', ex: 'Our REST API returns JSON.' },
+      { en: 'latency', pos: 'n.', ko: '지연 시간', ex: 'Network latency is under 50ms.' },
+      { en: 'debug', pos: 'v.', ko: '오류를 잡다', ex: 'I\'ll debug this issue tomorrow.' },
+      { en: 'scalable', pos: 'adj.', ko: '확장 가능한', ex: 'The architecture is highly scalable.' },
+      { en: 'cache', pos: 'n./v.', ko: '캐시 (임시 저장)', ex: 'Browser cache speeds up page loads.' },
+      { en: 'endpoint', pos: 'n.', ko: 'API 엔드포인트, 종점', ex: 'POST to the /users endpoint.' },
+      { en: 'rollback', pos: 'n./v.', ko: '롤백, 이전 버전으로 되돌리다', ex: 'Roll back to the last stable release.' }
+    ]
+  },
+  { id: 'medical', icon: '🏥', name: '의료·건강', one: '증상·진단·치료',
+    words: [
+      { en: 'symptom', pos: 'n.', ko: '증상', ex: 'Fever is a common symptom.' },
+      { en: 'diagnosis', pos: 'n.', ko: '진단', ex: 'The doctor gave a clear diagnosis.' },
+      { en: 'prescription', pos: 'n.', ko: '처방전', ex: 'Pick up your prescription at the pharmacy.' },
+      { en: 'surgery', pos: 'n.', ko: '수술', ex: 'She had heart surgery last week.' },
+      { en: 'treatment', pos: 'n.', ko: '치료', ex: 'Early treatment improves outcomes.' },
+      { en: 'recovery', pos: 'n.', ko: '회복', ex: 'Full recovery takes 6 weeks.' },
+      { en: 'chronic', pos: 'adj.', ko: '만성의', ex: 'Diabetes is a chronic disease.' },
+      { en: 'acute', pos: 'adj.', ko: '급성의', ex: 'He had acute appendicitis.' },
+      { en: 'dosage', pos: 'n.', ko: '복용량', ex: 'Follow the recommended dosage.' },
+      { en: 'side effect', pos: 'n.', ko: '부작용', ex: 'Possible side effects include nausea.' }
+    ]
+  },
+  { id: 'legal', icon: '⚖️', name: '법률·계약', one: '계약서·소송·조항',
+    words: [
+      { en: 'contract', pos: 'n.', ko: '계약(서)', ex: 'Please sign the contract here.' },
+      { en: 'clause', pos: 'n.', ko: '조항', ex: 'Section 5, clause 2 covers termination.' },
+      { en: 'plaintiff', pos: 'n.', ko: '원고 (소송을 건 사람)', ex: 'The plaintiff filed a lawsuit.' },
+      { en: 'defendant', pos: 'n.', ko: '피고 (소송 당한 사람)', ex: 'The defendant denied the charges.' },
+      { en: 'jurisdiction', pos: 'n.', ko: '관할권, 사법권', ex: 'This court has jurisdiction over the case.' },
+      { en: 'liability', pos: 'n.', ko: '책임 (법적)', ex: 'Limited liability protects shareholders.' },
+      { en: 'breach', pos: 'n./v.', ko: '위반(하다)', ex: 'They are in breach of contract.' },
+      { en: 'indemnify', pos: 'v.', ko: '배상하다, 보상하다', ex: 'The vendor shall indemnify the buyer.' },
+      { en: 'NDA', pos: 'abbr.', ko: '비밀유지계약 (Non-Disclosure Agreement)', ex: 'Please sign the NDA before our meeting.' },
+      { en: 'IP', pos: 'abbr.', ko: '지식재산권 (Intellectual Property)', ex: 'We protect our IP through patents.' }
+    ]
+  },
+  { id: 'travel', icon: '✈️', name: '여행·출장', one: '공항·호텔·교통',
+    words: [
+      { en: 'itinerary', pos: 'n.', ko: '여행 일정표', ex: 'Here is your detailed itinerary.' },
+      { en: 'boarding pass', pos: 'n.', ko: '탑승권', ex: 'Show your boarding pass at the gate.' },
+      { en: 'baggage claim', pos: 'n.', ko: '수하물 찾는 곳', ex: 'Meet me at baggage claim.' },
+      { en: 'layover', pos: 'n.', ko: '경유, 환승 대기', ex: 'A 3-hour layover in Tokyo.' },
+      { en: 'jet lag', pos: 'n.', ko: '시차로 인한 피로', ex: 'I have terrible jet lag.' },
+      { en: 'reservation', pos: 'n.', ko: '예약', ex: 'I have a reservation under Kim.' },
+      { en: 'check-in', pos: 'n./v.', ko: '체크인', ex: 'Online check-in opens 24 hours before.' },
+      { en: 'customs declaration', pos: 'n.', ko: '세관 신고', ex: 'Fill out the customs declaration form.' },
+      { en: 'visa', pos: 'n.', ko: '비자', ex: 'You need a visa to enter China.' },
+      { en: 'amenity', pos: 'n.', ko: '편의시설', ex: 'The hotel offers many amenities.' }
+    ]
+  },
+  { id: 'marketing', icon: '📈', name: '마케팅·영업', one: '브랜드·고객·전환',
+    words: [
+      { en: 'lead', pos: 'n.', ko: '잠재 고객', ex: 'We generated 200 leads this month.' },
+      { en: 'conversion rate', pos: 'n.', ko: '전환율 (방문→구매 비율)', ex: 'Our conversion rate is 2.5%.' },
+      { en: 'funnel', pos: 'n.', ko: '깔때기 (고객 여정 단계)', ex: 'Optimize the top of the funnel.' },
+      { en: 'segmentation', pos: 'n.', ko: '시장 세분화', ex: 'Customer segmentation drives our strategy.' },
+      { en: 'churn', pos: 'n./v.', ko: '이탈(률)', ex: 'Reduce monthly churn to under 5%.' },
+      { en: 'CTA', pos: 'abbr.', ko: '행동유도 버튼 (Call To Action)', ex: 'Make the CTA more prominent.' },
+      { en: 'brand awareness', pos: 'n.', ko: '브랜드 인지도', ex: 'Increase brand awareness in Gen Z.' },
+      { en: 'engagement', pos: 'n.', ko: '참여도, 인게이지먼트', ex: 'Engagement on Instagram is up 30%.' },
+      { en: 'pipeline', pos: 'n.', ko: '영업 파이프라인 (진행 중인 거래)', ex: 'Our pipeline has $2M in potential deals.' },
+      { en: 'upsell', pos: 'v.', ko: '상위 상품을 추가 판매하다', ex: 'Upsell to the premium plan.' }
+    ]
+  }
+];
+
+let currentProDomain = null;
+
+function renderPro() {
+  const itemsHtml = PRO_DOMAINS.map(d => `
+    <div class="pro-domain-card" onclick="openProDomain('${d.id}')">
+      <span class="icon">${d.icon}</span>
+      <div style="flex:1; min-width:0">
+        <h4>${escapeHtml(d.name)}</h4>
+        <div class="one">${escapeHtml(d.one)} · ${d.words.length}개 기본 단어</div>
+      </div>
+      <span style="font-size:18px; color:var(--ink-muted)">→</span>
+    </div>
+  `).join('');
+  document.getElementById('main').innerHTML = `
+    <h2 style="margin-bottom:6px">💼 전문 용어</h2>
+    <p class="subtitle" style="margin-bottom:14px">분야별 핵심 용어 + AI로 확장 · 단어장 즉시 추가</p>
+
+    <div style="background:var(--gold-soft); border:1px solid var(--gold); padding:12px 14px; border-radius:12px; font-size:13px; line-height:1.5; margin-bottom:18px">
+      💡 <strong>전문 분야 영어는 어떻게 배워야 할까?</strong>
+      <br>① <strong>분야별 기본 단어 30~50개</strong>를 먼저 외움 (여기 내장됨)
+      <br>② 그 분야의 <strong>실제 글·영상</strong>을 반복 노출 (Investopedia, BBC Business 등 자료 탭)
+      <br>③ <strong>본인 업무에 자주 나오는 표현</strong>은 즉시 단어장에 추가해 SRS로 반복
+      <br>④ AI에게 <strong>"이 분야 단어 더 추천해줘"</strong> 요청 (각 분야 상세 화면)
+    </div>
+
+    ${itemsHtml}
+
+    <h3 style="margin: 22px 0 10px">🔗 추천 외부 리소스</h3>
+    <div class="pro-domain-card" onclick="window.open('https://www.investopedia.com/financial-term-dictionary-4769738','_blank')">
+      <span class="icon">📊</span>
+      <div style="flex:1"><h4>Investopedia 금융용어 사전</h4><div class="one">금융·투자 모든 용어 영영 정의</div></div>
+      <span style="font-size:14px">🔗</span>
+    </div>
+    <div class="pro-domain-card" onclick="window.open('https://www.bbc.com/news/business','_blank')">
+      <span class="icon">📰</span>
+      <div style="flex:1"><h4>BBC Business</h4><div class="one">매일 업데이트되는 비즈니스 뉴스</div></div>
+      <span style="font-size:14px">🔗</span>
+    </div>
+    <div class="pro-domain-card" onclick="window.open('https://iccwbo.org/business-solutions/incoterms-rules/','_blank')">
+      <span class="icon">🌍</span>
+      <div style="flex:1"><h4>ICC Incoterms 2020</h4><div class="one">국제상업회의소 공식 무역 조건</div></div>
+      <span style="font-size:14px">🔗</span>
+    </div>
+    <div class="pro-domain-card" onclick="window.open('https://dictionary.cambridge.org/dictionary/business-english/','_blank')">
+      <span class="icon">📖</span>
+      <div style="flex:1"><h4>Cambridge Business English Dictionary</h4><div class="one">비즈니스 영어 전문 사전</div></div>
+      <span style="font-size:14px">🔗</span>
+    </div>
+  `;
+}
+
+function openProDomain(id) {
+  currentProDomain = PRO_DOMAINS.find(d => d.id === id);
+  if (!currentProDomain) return;
+  activeScreen = 'pro-domain';
+  render();
+}
+
+function renderProDomain() {
+  const d = currentProDomain;
+  if (!d) return nav('pro');
+  const generated = state.profession.generated[d.id] || [];
+  const savedLower = (state.savedWords || []).map(s => s.word.toLowerCase());
+  const renderItem = (w) => {
+    const isSaved = savedLower.includes(w.en.toLowerCase());
+    return `
+      <div class="pro-vocab-item">
+        <div class="head">
+          <div style="flex:1; min-width:0">
+            <div class="word">${escapeHtml(w.en)}${w.pos ? `<span class="pos">${escapeHtml(w.pos)}</span>` : ''}</div>
+            <div class="ko">${escapeHtml(w.ko || '')}</div>
+            ${w.ex ? `<div class="ex">"${escapeHtml(w.ex)}"</div>` : ''}
+          </div>
+          <button class="save-btn ${isSaved ? 'saved' : ''}" onclick="event.stopPropagation(); saveBibleVocab('${escapeAttr(w.en)}','${escapeAttr(w.ko || '')}',this)">
+            ${isSaved ? '✓ 저장' : '+ 저장'}
+          </button>
+        </div>
+      </div>
+    `;
+  };
+  const basicHtml = d.words.map(renderItem).join('');
+  const aiHtml = generated.length ? generated.map(renderItem).join('') : '';
+  document.getElementById('main').innerHTML = `
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px">
+      <button class="close-btn" onclick="nav('pro')">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <span style="font-size:30px">${d.icon}</span>
+      <h2 style="flex:1">${escapeHtml(d.name)}</h2>
+    </div>
+    <p class="subtitle" style="margin-bottom:14px">${escapeHtml(d.one)} · 기본 ${d.words.length}개${generated.length ? ` + AI ${generated.length}개` : ''}</p>
+
+    <h3 style="margin: 10px 0 8px">📌 기본 단어</h3>
+    ${basicHtml}
+
+    ${aiHtml ? `<h3 style="margin: 20px 0 8px">🤖 AI가 추천한 단어</h3>${aiHtml}` : ''}
+
+    <button class="btn" style="margin: 20px 0 10px" onclick="generateProVocab('${d.id}')">
+      🤖 AI로 ${d.name} 단어 10개 더 만들기
+    </button>
+    <button class="btn btn-ghost" onclick="generateProArticle('${d.id}')">
+      📰 ${d.name} 시나리오 글 생성
+    </button>
+  `;
+}
+
+async function generateProVocab(id) {
+  if (!state.settings.apiKey) { toast('설정에서 API 키를 입력해주세요'); return; }
+  const d = PRO_DOMAINS.find(x => x.id === id);
+  if (!d) return;
+  toast('🤖 AI가 단어를 만들고 있어요...');
+  try {
+    const existing = d.words.map(w => w.en).concat((state.profession.generated[id] || []).map(w => w.en));
+    const systemPrompt = `You generate professional English vocabulary for Korean learners. Respond in JSON only:
+{
+  "words": [
+    { "en": "term", "pos": "n./v./adj./abbr. etc", "ko": "한국어 뜻 (필요시 설명)", "ex": "그 단어를 쓴 영어 예문 한 문장" }
+  ]
+}
+Generate 10 useful "${d.name}" (${d.one}) words. Avoid these already-included: ${existing.join(', ')}. Level: intermediate (B1-B2). Korean translation should be clear and concise.`;
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': state.settings.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate 10 ${d.name} vocabulary terms.` }] })
+    });
+    if (!res.ok) { toast('API 오류'); return; }
+    const data = await res.json();
+    const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(text);
+    state.profession.generated[id] = (state.profession.generated[id] || []).concat(parsed.words || []);
+    state.stats.xp += 8;
+    saveState();
+    render();
+    toast(`✅ ${parsed.words?.length || 0}개 단어 추가됨`);
+  } catch (e) { console.error(e); toast('생성 실패'); }
+}
+
+async function generateProArticle(id) {
+  if (!state.settings.apiKey) { toast('설정에서 API 키를 입력해주세요'); return; }
+  const d = PRO_DOMAINS.find(x => x.id === id);
+  if (!d) return;
+  toast('🤖 시나리오 글을 만들고 있어요...');
+  try {
+    const systemPrompt = `Generate a short, realistic English passage (120-180 words) about a "${d.name}" (${d.one}) scenario for Korean learners at ${state.user.level} level. Then provide Korean translation. Respond in JSON:
+{ "title": "글 제목 (한국어)", "scenario": "한국어로 시나리오 설명 1문장", "text": "영어 본문", "korean": "한국어 번역" }`;
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': state.settings.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate a ${d.name} scenario passage.` }] })
+    });
+    if (!res.ok) { toast('API 오류'); return; }
+    const data = await res.json();
+    const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(text);
+    state.readingHistory = state.readingHistory || [];
+    state.readingHistory.push({
+      title: parsed.title || `${d.name} 시나리오`,
+      content: parsed.text || '',
+      korean: parsed.korean || '',
+      level: state.user.level,
+      source: `AI · ${d.name}`,
+      savedAt: Date.now()
+    });
+    if (state.readingHistory.length > 30) state.readingHistory.shift();
+    saveState();
+    toast('📰 읽기 탭에서 확인하세요');
+    nav('reading');
+  } catch (e) { console.error(e); toast('생성 실패'); }
 }
 
 /* ---------- INIT ---------- */
