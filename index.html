@@ -1448,9 +1448,15 @@ const DEFAULT_STATE = {
 const DEFAULT_APP = {
   profiles: [],     // [{ id, name, role: 'admin'|'member', createdAt, lastActive }]
   currentId: null,
-  adminPin: null,   // 6자리 (관리자가 처음 진입 시 설정)
-  apiKey: '',       // 공용 Anthropic API 키 (관리자만 편집)
-  ttsSpeed: 0.9
+  adminPin: null,   // 6자리 (관리자가 처음 진입 시 설정) — local 모드에서만 사용
+  apiKey: '',       // 공용 Anthropic API 키 (local 모드에서만 사용; cloud에선 서버 보관)
+  ttsSpeed: 0.9,
+  // === Cloud mode (Cloudflare Worker 백엔드) ===
+  mode: 'local',          // 'local' | 'cloud'
+  backendUrl: '',         // 예: 'https://lingo-api.xxx.workers.dev'
+  cloudToken: '',         // 백엔드 세션 토큰
+  cloudMember: null,      // { id, name, role } — 현재 로그인한 회원 (cloud mode)
+  signupCode: ''          // 회원이 가입 시 입력할 코드 (관리자가 백엔드에 설정한 경우)
 };
 
 let app = loadApp();
@@ -1507,28 +1513,140 @@ function loadState() {
   }
 }
 
+let _lastStatsSync = 0;
 function saveState() {
   if (!app || !app.currentId) return;
-  // 설정에서 API 키 편집 시 app.apiKey로 끌어올림 (관리자만)
-  const me = app.profiles.find(p => p.id === app.currentId);
-  if (me && me.role === 'admin' && state.settings.apiKey !== app.apiKey) {
-    app.apiKey = state.settings.apiKey || '';
-    saveApp();
-  }
-  if (me) {
-    me.lastActive = Date.now();
-    saveApp();
+  // 설정에서 API 키 편집 시 app.apiKey로 끌어올림 (관리자만, 로컬 모드만)
+  if (!isCloudMode()) {
+    const me = app.profiles.find(p => p.id === app.currentId);
+    if (me && me.role === 'admin' && state.settings.apiKey !== app.apiKey) {
+      app.apiKey = state.settings.apiKey || '';
+      saveApp();
+    }
+    if (me) {
+      me.lastActive = Date.now();
+      saveApp();
+    }
   }
   localStorage.setItem(profileKey(app.currentId), JSON.stringify(state));
+
+  // 클라우드 모드: 30초 쓰로틀로 통계 백엔드에 동기화
+  if (isCloudMode() && app.cloudToken && Date.now() - _lastStatsSync > 30000) {
+    _lastStatsSync = Date.now();
+    cloudSyncStats();
+  }
 }
 
 function currentProfile() {
+  if (app.mode === 'cloud') {
+    return app.cloudMember || null;
+  }
   if (!app.currentId) return null;
   return app.profiles.find(p => p.id === app.currentId) || null;
 }
 function isAdmin() {
   const p = currentProfile();
   return p && p.role === 'admin';
+}
+
+/* =========================================================
+   CLOUD MODE / 백엔드 통신 헬퍼
+   ========================================================= */
+function isCloudMode() { return app.mode === 'cloud' && !!app.backendUrl; }
+
+async function cloudFetch(path, opts) {
+  if (!app.backendUrl) throw new Error('백엔드 URL이 설정되지 않았어요');
+  const url = app.backendUrl.replace(/\/$/, '') + path;
+  const headers = Object.assign({ 'Content-Type': 'application/json' }, (opts && opts.headers) || {});
+  if (app.cloudToken) headers['Authorization'] = 'Bearer ' + app.cloudToken;
+  const res = await fetch(url, Object.assign({ method: 'GET' }, opts, { headers }));
+  let data = null;
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok) {
+    const msg = (data && data.error) || ('HTTP ' + res.status);
+    if (res.status === 401 || /로그인이 필요/.test(msg)) {
+      // 세션 만료 → 로그아웃 처리
+      app.cloudToken = '';
+      app.cloudMember = null;
+      saveApp();
+    }
+    throw new Error(msg);
+  }
+  return data;
+}
+
+async function cloudHealth() {
+  return cloudFetch('/health');
+}
+async function cloudSignup(name, pin, signupCode) {
+  return cloudFetch('/signup', { method: 'POST', body: JSON.stringify({ name, pin, signupCode }) });
+}
+async function cloudLogin(name, pin) {
+  return cloudFetch('/login', { method: 'POST', body: JSON.stringify({ name, pin }) });
+}
+async function cloudLogout() {
+  try { await cloudFetch('/logout', { method: 'POST' }); } catch (e) {}
+  app.cloudToken = '';
+  app.cloudMember = null;
+  saveApp();
+}
+async function cloudMe() {
+  return cloudFetch('/me');
+}
+async function cloudSyncStats() {
+  if (!isCloudMode() || !app.cloudToken) return;
+  const stats = {
+    xp: state.stats.xp || 0,
+    streak: state.stats.streak || 0,
+    totalLessons: state.stats.totalLessons || 0,
+    gems: state.stats.gems || 0,
+    words: Object.keys(state.srs || {}).length,
+    level: state.user.level || null,
+    grammarMastered: Object.values(state.grammarProgress || {}).filter(p => p.mastered).length
+  };
+  try { await cloudFetch('/me/stats', { method: 'POST', body: JSON.stringify(stats) }); } catch (e) {}
+}
+async function cloudAdminMembers() {
+  return cloudFetch('/admin/members');
+}
+async function cloudAdminDelete(id) {
+  return cloudFetch('/admin/delete', { method: 'POST', body: JSON.stringify({ id }) });
+}
+async function cloudAdminResetPin(id, newPin) {
+  return cloudFetch('/admin/reset-pin', { method: 'POST', body: JSON.stringify({ id, newPin }) });
+}
+async function cloudAdminSetSignupCode(code) {
+  return cloudFetch('/admin/signup-code', { method: 'POST', body: JSON.stringify({ code }) });
+}
+
+/* AI 호출 통합 래퍼 — local 모드면 직접 Anthropic, cloud 모드면 백엔드 프록시 */
+async function aiMessagesCall(payload) {
+  if (isCloudMode()) {
+    return cloudFetch('/ai/messages', { method: 'POST', body: JSON.stringify(payload) });
+  }
+  // local 모드: 기존 동작 유지
+  const key = (app.apiKey || state.settings.apiKey || '').trim();
+  if (!key) throw new Error('API 키가 없어요');
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error('API error: ' + txt);
+  }
+  return res.json();
+}
+
+function hasAi() {
+  if (isCloudMode()) return !!app.cloudToken;
+  return !!(app.apiKey || state.settings.apiKey);
 }
 function deepMerge(base, override) {
   for (const k in override) {
@@ -1698,17 +1816,43 @@ function renderTopbar() {
 }
 
 function render() {
-  // 멀티 프로필 라우팅 — 가장 먼저 검사
-  if (!app.profiles || app.profiles.length === 0) {
-    setChrome(false, false);
-    document.getElementById('main').scrollTop = 0;
-    return renderProfileCreate(true /* 첫 관리자 */);
+  // 모달 화면 (모드 관계없이) — 먼저 처리
+  if (activeScreen === 'cloud-setup')   { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderCloudSetup(); }
+  if (activeScreen === 'cloud-auth')    { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderCloudAuth(); }
+
+  // CLOUD 모드 라우팅
+  if (isCloudMode()) {
+    if (!app.cloudToken || !app.cloudMember) {
+      setChrome(false, false);
+      document.getElementById('main').scrollTop = 0;
+      return renderCloudAuth();
+    }
+    // currentId를 cloud member id로 동기화 (각 회원의 로컬 학습 데이터 키 분리)
+    if (app.currentId !== app.cloudMember.id) {
+      app.currentId = app.cloudMember.id;
+      saveApp();
+      state = loadState();
+    }
+    if (activeScreen === 'cloud-admin') { setChrome(true, false);  document.getElementById('main').scrollTop = 0; renderTopbar(); return renderCloudAdmin(); }
+  } else {
+    // 로컬 모드 — 기존 흐름
+    if (app.mode === 'cloud' && !app.backendUrl) {
+      setChrome(false, false);
+      document.getElementById('main').scrollTop = 0;
+      return renderCloudSetup();
+    }
+    if (!app.profiles || app.profiles.length === 0) {
+      setChrome(false, false);
+      document.getElementById('main').scrollTop = 0;
+      return renderProfileCreate(true /* 첫 관리자 */);
+    }
+    if (activeScreen === 'profile-picker' || !app.currentId) {
+      setChrome(false, false);
+      document.getElementById('main').scrollTop = 0;
+      return renderProfilePicker();
+    }
   }
-  if (activeScreen === 'profile-picker' || !app.currentId) {
-    setChrome(false, false);
-    document.getElementById('main').scrollTop = 0;
-    return renderProfilePicker();
-  }
+
   if (activeScreen === 'profile-create')  { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderProfileCreate(false); }
   if (activeScreen === 'admin-login')     { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderAdminLogin(); }
   if (activeScreen === 'admin')           { setChrome(true, false);  document.getElementById('main').scrollTop = 0; renderTopbar(); return renderAdmin(); }
@@ -2470,12 +2614,12 @@ function renderChat() {
     });
   }
 
-  const hasKey = !!state.settings.apiKey;
+  const hasKey = hasAi();
   let warnHtml = '';
   if (!hasKey) {
     warnHtml = `<div class="card" style="background:var(--gold-soft); border-color:var(--gold); margin-bottom:14px">
-      <strong>💡 API 키 필요</strong>
-      <p style="margin:4px 0 10px; font-size:14px">실제 AI 대화를 위해 설정에서 Anthropic API 키를 입력하세요. (없으면 기본 응답만 제공돼요)</p>
+      <strong>💡 AI 키 필요</strong>
+      <p style="margin:4px 0 10px; font-size:14px">${isCloudMode() ? '관리자가 백엔드에 API 키를 등록해야 작동해요.' : '설정에서 Anthropic API 키를 입력하세요. (없으면 기본 응답만 제공)'}</p>
       <button class="btn btn-ghost" style="padding:10px" onclick="nav('settings')">설정으로 이동</button>
     </div>`;
   }
@@ -2541,11 +2685,10 @@ async function sendChat() {
 }
 
 async function callClaude(userMessage) {
-  if (!state.settings.apiKey) {
-    // Fallback: canned reply
+  if (!hasAi()) {
     return {
-      en: `That's interesting! Tell me more. (Tip: add your API key in Settings for real conversation.)`,
-      ko: `흥미롭네요! 더 얘기해주세요. (실제 대화를 위해 설정에서 API 키를 입력해주세요.)`
+      en: `That's interesting! Tell me more. (Tip: log in or ask your admin to set the AI key.)`,
+      ko: `흥미롭네요! 더 얘기해주세요. (AI 대화를 쓰려면 로그인하거나 관리자에게 키 요청)`
     };
   }
   try {
@@ -2560,27 +2703,12 @@ Be conversational, ask follow-up questions, gently correct major errors (mention
       }))
     ];
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': state.settings.apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
-        system: systemPrompt,
-        messages: messages
-      })
+    const data = await aiMessagesCall({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      system: systemPrompt,
+      messages: messages
     });
-    if (!res.ok) {
-      const errText = await res.text();
-      console.warn('API error', errText);
-      return { en: `(API error - check your key in Settings)`, ko: `(API 오류 - 설정에서 키를 확인하세요)` };
-    }
-    const data = await res.json();
     const text = data.content?.[0]?.text || '';
     try {
       // Strip markdown fences if any
@@ -2895,29 +3023,18 @@ function makeTappableText(text) {
 async function generateExamples(word) {
   const slot = document.getElementById('ai-examples-slot');
   if (!slot) return;
-  if (!state.settings.apiKey) {
-    slot.innerHTML = `<div style="padding:12px; background:var(--gold-soft); border-radius:10px; margin-top:10px; font-size:14px">💡 AI 예문 기능은 설정에서 API 키 입력 후 사용 가능합니다.</div>`;
+  if (!hasAi()) {
+    slot.innerHTML = `<div style="padding:12px; background:var(--gold-soft); border-radius:10px; margin-top:10px; font-size:14px">💡 AI 예문은 로그인하거나 관리자가 API 키를 설정한 후 사용 가능합니다.</div>`;
     return;
   }
   slot.innerHTML = `<div style="padding:12px; text-align:center"><div class="dots"><span></span><span></span><span></span></div></div>`;
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': state.settings.apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 400,
-        system: `You generate 3 example sentences for a Korean English learner at CEFR ${state.user.level} level. Reply ONLY in JSON (no markdown): {"examples":[{"en":"sentence using the word","ko":"Korean translation"}]}`,
-        messages: [{ role: 'user', content: `Generate 3 short, natural example sentences using the word "${word}" appropriate for ${state.user.level} level. Each under 12 words.` }]
-      })
+    const data = await aiMessagesCall({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 400,
+      system: `You generate 3 example sentences for a Korean English learner at CEFR ${state.user.level} level. Reply ONLY in JSON (no markdown): {"examples":[{"en":"sentence using the word","ko":"Korean translation"}]}`,
+      messages: [{ role: 'user', content: `Generate 3 short, natural example sentences using the word "${word}" appropriate for ${state.user.level} level. Each under 12 words.` }]
     });
-    if (!res.ok) throw new Error('API error');
-    const data = await res.json();
     const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(text);
     slot.innerHTML = `
@@ -2936,24 +3053,13 @@ async function generateExamples(word) {
 
 /* AI translation of single word (when dictionary fails) */
 async function aiTranslateWord(word) {
-  if (!state.settings.apiKey) return null;
+  if (!hasAi()) return null;
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': state.settings.apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 100,
-        messages: [{ role: 'user', content: `Translate "${word}" to Korean. Reply ONLY with the Korean translation, no explanation.` }]
-      })
+    const data = await aiMessagesCall({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: `Translate "${word}" to Korean. Reply ONLY with the Korean translation, no explanation.` }]
     });
-    if (!res.ok) return null;
-    const data = await res.json();
     return (data.content?.[0]?.text || '').trim();
   } catch(e) { return null; }
 }
@@ -3023,8 +3129,8 @@ const CURATED_CLASSICS = [
 ];
 
 async function generateReadingArticle(topicEn, topicKo) {
-  if (!state.settings.apiKey) {
-    toast('설정에서 Anthropic API 키를 먼저 입력해주세요');
+  if (!hasAi()) {
+    toast(isCloudMode() ? '관리자가 API 키를 아직 설정하지 않았어요' : '설정에서 Anthropic API 키를 먼저 입력해주세요');
     return;
   }
   // Loading screen
@@ -3042,23 +3148,12 @@ async function generateReadingArticle(topicEn, topicKo) {
   `;
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': state.settings.apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 800,
-        system: `Generate a short English reading passage for a Korean learner at CEFR ${state.user.level} level. Use vocabulary and sentence structures appropriate for that level. Reply ONLY in JSON: {"title":"engaging title","content":"3-4 paragraphs separated by \\n\\n","summary_ko":"한 줄 한국어 요약"}`,
-        messages: [{ role: 'user', content: `Write a ${state.user.level} level reading passage about: ${topicEn}. Approx 150-250 words. Make it engaging and useful for vocabulary learning.` }]
-      })
+    const data = await aiMessagesCall({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 800,
+      system: `Generate a short English reading passage for a Korean learner at CEFR ${state.user.level} level. Use vocabulary and sentence structures appropriate for that level. Reply ONLY in JSON: {"title":"engaging title","content":"3-4 paragraphs separated by \\n\\n","summary_ko":"한 줄 한국어 요약"}`,
+      messages: [{ role: 'user', content: `Write a ${state.user.level} level reading passage about: ${topicEn}. Approx 150-250 words. Make it engaging and useful for vocabulary learning.` }]
     });
-    if (!res.ok) throw new Error('API error');
-    const data = await res.json();
     const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(text);
 
@@ -3096,25 +3191,15 @@ async function openClassic(bookId, title, author) {
   `;
 
   // Try AI-simplified version first (most reliable, level-appropriate)
-  if (state.settings.apiKey) {
+  if (hasAi()) {
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': state.settings.apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 800,
-          system: `You produce a simplified excerpt of a classic English novel for a CEFR ${state.user.level} Korean learner. Reply ONLY in JSON: {"content":"3-4 short paragraphs of the opening, simplified vocabulary appropriate for ${state.user.level}","summary_ko":"한국어 요약 1-2 문장"}`,
-          messages: [{ role: 'user', content: `Produce a ${state.user.level}-level simplified version of the opening of "${title}" by ${author} (Project Gutenberg #${bookId}). Keep the story's spirit, simplify vocabulary and grammar for the learner.` }]
-        })
+      const data = await aiMessagesCall({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 800,
+        system: `You produce a simplified excerpt of a classic English novel for a CEFR ${state.user.level} Korean learner. Reply ONLY in JSON: {"content":"3-4 short paragraphs of the opening, simplified vocabulary appropriate for ${state.user.level}","summary_ko":"한국어 요약 1-2 문장"}`,
+        messages: [{ role: 'user', content: `Produce a ${state.user.level}-level simplified version of the opening of "${title}" by ${author} (Project Gutenberg #${bookId}). Keep the story's spirit, simplify vocabulary and grammar for the learner.` }]
       });
-      if (res.ok) {
-        const data = await res.json();
+      {
         const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
         const parsed = JSON.parse(text);
         const article = {
@@ -3362,26 +3447,39 @@ function renderSettings() {
         <div style="width:44px; height:44px; border-radius:50%; background:${admin ? 'var(--purple)' : 'var(--accent)'}; color:white; display:flex; align-items:center; justify-content:center; font-family:var(--serif); font-weight:700; font-size:20px">${escapeHtml(avatarChar(me?.name || ''))}</div>
         <div style="flex:1">
           <div style="font-weight:700">${escapeHtml(me?.name || '?')}</div>
-          <div style="font-size:12px; color:var(--ink-soft)">${admin ? '👑 관리자' : '회원'}</div>
+          <div style="font-size:12px; color:var(--ink-soft)">${admin ? '👑 관리자' : '회원'} · ${isCloudMode() ? '☁️ 백엔드' : '📱 로컬'}</div>
         </div>
       </div>
       <div style="display:flex; gap:8px; margin-top:14px">
-        <button class="btn btn-ghost" style="flex:1" onclick="nav('profile-picker')">↔ 프로필 전환</button>
-        ${admin ? `<button class="btn" style="flex:1" onclick="nav('admin')">👑 관리자 페이지</button>` : `<button class="btn btn-ghost" style="flex:1" onclick="nav('admin-login')">🔐 관리자 진입</button>`}
+        ${isCloudMode()
+          ? `<button class="btn btn-ghost" style="flex:1" onclick="doCloudLogout()">🚪 로그아웃</button>`
+          : `<button class="btn btn-ghost" style="flex:1" onclick="nav('profile-picker')">↔ 프로필 전환</button>`}
+        ${admin
+          ? `<button class="btn" style="flex:1" onclick="nav('${isCloudMode() ? 'cloud-admin' : 'admin'}')">👑 관리자</button>`
+          : (isCloudMode() ? '' : `<button class="btn btn-ghost" style="flex:1" onclick="nav('admin-login')">🔐 관리자 진입</button>`)}
       </div>
     </div>
 
-    <div class="card">
-      <h3 style="margin-bottom: 12px">🔑 공용 AI API 키</h3>
-      ${admin ? `
-        <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">관리자만 편집 가능 — 모든 회원의 AI 기능에 사용돼요.</p>
-        <input class="input" id="api-key-input" type="password" placeholder="sk-ant-..." value="${escapeAttr(app.apiKey)}" />
-        <button class="btn" style="margin-top: 10px" onclick="saveApiKey()">저장</button>
-      ` : `
-        <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">관리자가 설정한 공용 키를 사용해요. 회원은 키를 볼 수 없습니다.</p>
-        <div style="background:var(--bg-muted); padding:12px 14px; border-radius:10px; font-family:monospace; color:var(--ink-soft)">${escapeHtml(apiKeyMasked)}</div>
-      `}
-    </div>
+    ${isCloudMode() ? `
+      <div class="card" style="margin-bottom:14px">
+        <h3 style="margin-bottom: 10px">☁️ 백엔드 연결</h3>
+        <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 8px">서버 기반 — 다른 폰 회원과 같은 그룹</p>
+        <div style="background:var(--bg-muted); padding:10px 12px; border-radius:10px; font-size:12px; color:var(--ink-soft); word-break:break-all; margin-bottom:8px">${escapeHtml(app.backendUrl)}</div>
+        <button class="btn btn-ghost" style="font-size:13px" onclick="activeScreen='cloud-setup'; render();">백엔드 URL 변경</button>
+      </div>
+    ` : `
+      <div class="card">
+        <h3 style="margin-bottom: 12px">🔑 공용 AI API 키</h3>
+        ${admin ? `
+          <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">관리자만 편집 가능 — 모든 회원의 AI 기능에 사용돼요.</p>
+          <input class="input" id="api-key-input" type="password" placeholder="sk-ant-..." value="${escapeAttr(app.apiKey)}" />
+          <button class="btn" style="margin-top: 10px" onclick="saveApiKey()">저장</button>
+        ` : `
+          <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">관리자가 설정한 공용 키를 사용해요. 회원은 키를 볼 수 없습니다.</p>
+          <div style="background:var(--bg-muted); padding:12px 14px; border-radius:10px; font-family:monospace; color:var(--ink-soft)">${escapeHtml(apiKeyMasked)}</div>
+        `}
+      </div>
+    `}
 
     <div class="card" style="margin-top: 14px">
       <h3 style="margin-bottom: 8px">🎚 음성 속도 (TTS)</h3>
@@ -4828,8 +4926,8 @@ function toggleSaveVerse(ref, refKo) {
 }
 
 async function explainPassage(ref, refKo) {
-  if (!state.settings.apiKey) {
-    toast('설정에서 Anthropic API 키를 먼저 입력해주세요');
+  if (!hasAi()) {
+    toast(isCloudMode() ? '관리자가 API 키를 아직 설정하지 않았어요' : '설정에서 Anthropic API 키를 먼저 입력해주세요');
     return;
   }
   const slot = document.getElementById('verse-explain-slot');
@@ -4866,23 +4964,12 @@ async function explainPassage(ref, refKo) {
 - 각 grammar 항목에 반드시 term(용어명)과 termDef(그 용어 뜻)를 포함. 영어 처음 배우는 사람도 "전치사가 뭐지?" 하면 그 자리에서 알게.
 - 응답은 반드시 valid JSON 한 객체만.`;
     const userMsg = `Passage reference: ${ref} (${refKo})\nFull text (WEB):\n${passage.text}\n\nIndividual verses:\n${passage.verses.map(v => `${v.verse}. ${v.text.trim()}`).join('\n')}`;
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': state.settings.apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 2000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userMsg }]
-      })
+    const data = await aiMessagesCall({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMsg }]
     });
-    if (!res.ok) { slot.innerHTML = '<p style="color:var(--danger); text-align:center">API 오류 — 설정에서 키를 확인하세요</p>'; return; }
-    const data = await res.json();
     const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(text);
     state.bible.explainCache[ref] = parsed;
@@ -5552,7 +5639,7 @@ function renderProDomain() {
 }
 
 async function generateProVocab(id) {
-  if (!state.settings.apiKey) { toast('설정에서 API 키를 입력해주세요'); return; }
+  if (!hasAi()) { toast(isCloudMode() ? '관리자가 API 키를 아직 설정하지 않았어요' : '설정에서 API 키를 입력해주세요'); return; }
   const d = PRO_DOMAINS.find(x => x.id === id);
   if (!d) return;
   toast('🤖 AI가 단어를 만들고 있어요...');
@@ -5565,13 +5652,7 @@ async function generateProVocab(id) {
   ]
 }
 Generate 10 useful "${d.name}" (${d.one}) words. Avoid these already-included: ${existing.join(', ')}. Level: intermediate (B1-B2). Korean translation should be clear and concise.`;
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': state.settings.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate 10 ${d.name} vocabulary terms.` }] })
-    });
-    if (!res.ok) { toast('API 오류'); return; }
-    const data = await res.json();
+    const data = await aiMessagesCall({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate 10 ${d.name} vocabulary terms.` }] });
     const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(text);
     state.profession.generated[id] = (state.profession.generated[id] || []).concat(parsed.words || []);
@@ -5583,20 +5664,14 @@ Generate 10 useful "${d.name}" (${d.one}) words. Avoid these already-included: $
 }
 
 async function generateProArticle(id) {
-  if (!state.settings.apiKey) { toast('설정에서 API 키를 입력해주세요'); return; }
+  if (!hasAi()) { toast(isCloudMode() ? '관리자가 API 키를 아직 설정하지 않았어요' : '설정에서 API 키를 입력해주세요'); return; }
   const d = PRO_DOMAINS.find(x => x.id === id);
   if (!d) return;
   toast('🤖 시나리오 글을 만들고 있어요...');
   try {
     const systemPrompt = `Generate a short, realistic English passage (120-180 words) about a "${d.name}" (${d.one}) scenario for Korean learners at ${state.user.level} level. Then provide Korean translation. Respond in JSON:
 { "title": "글 제목 (한국어)", "scenario": "한국어로 시나리오 설명 1문장", "text": "영어 본문", "korean": "한국어 번역" }`;
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': state.settings.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate a ${d.name} scenario passage.` }] })
-    });
-    if (!res.ok) { toast('API 오류'); return; }
-    const data = await res.json();
+    const data = await aiMessagesCall({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate a ${d.name} scenario passage.` }] });
     const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(text);
     state.readingHistory = state.readingHistory || [];
@@ -5659,12 +5734,14 @@ function renderProfilePicker() {
       ${addCard}
     </div>
 
-    <div style="margin-top:14px">
-      <button class="btn btn-ghost" onclick="goAdminLogin()">👑 관리자 페이지</button>
+    <div style="margin-top:14px; display:flex; gap:8px">
+      <button class="btn btn-ghost" style="flex:1" onclick="goAdminLogin()">👑 관리자 페이지</button>
+      <button class="btn btn-ghost" style="flex:1" onclick="activeScreen='cloud-setup'; render();">☁️ 백엔드 연결</button>
     </div>
 
     <p style="font-size:12px; color:var(--ink-muted); margin-top:24px; text-align:center; line-height:1.5">
-      💡 같은 기기에서 ${MAX_PROFILES}명까지 함께 사용할 수 있어요.<br>각자의 진행률·단어장·통계가 따로 저장됩니다.<br>AI 기능은 관리자가 입력한 공용 API 키로 작동합니다.
+      💡 <strong>로컬 모드</strong>: 이 기기에서만 ${MAX_PROFILES}명 사용 가능<br>
+      ☁️ <strong>백엔드 연결</strong>: 5명이 각자 다른 폰에서 독립적으로 사용
     </p>
   `;
 }
@@ -5675,19 +5752,41 @@ function startProfileCreate() {
 }
 
 function renderProfileCreate(isFirstAdmin) {
-  const heading = isFirstAdmin ? '👑 첫 관리자로 가입' : '👋 회원 가입';
-  const desc = isFirstAdmin
-    ? `이 기기의 첫 사용자입니다. 관리자가 되어 다른 회원들의 진행을 볼 수 있어요. 가입 후 설정에서 API 키와 관리자 PIN(6자리)을 등록해주세요.`
-    : `이름을 입력하고 가입하면 영어 학습을 시작할 수 있어요. 가입 가능 인원: ${MAX_PROFILES - app.profiles.length}명 남음.`;
+  const heading = isFirstAdmin ? '👋 시작하기' : '👋 회원 가입';
   document.getElementById('main').innerHTML = `
     <div style="padding: 30px 0 14px; text-align:center">
-      <div style="font-size:46px">${isFirstAdmin ? '👑' : '🌱'}</div>
+      <div style="font-size:46px">${isFirstAdmin ? '📚' : '🌱'}</div>
       <h1 style="margin:8px 0 2px; font-family:var(--serif)">${heading}</h1>
-      <p class="subtitle" style="line-height:1.5; max-width:340px; margin: 8px auto">${desc}</p>
+      ${isFirstAdmin ? `
+        <p class="subtitle" style="line-height:1.5; max-width:340px; margin: 8px auto">
+          이 기기의 첫 사용자입니다. 두 가지 방식 중 골라주세요.
+        </p>
+      ` : `
+        <p class="subtitle" style="line-height:1.5; max-width:340px; margin: 8px auto">이름을 입력하고 시작하세요 (정원: ${MAX_PROFILES - app.profiles.length}명 남음)</p>
+      `}
     </div>
+
+    ${isFirstAdmin ? `
+      <div class="card" style="margin-bottom:14px; background:var(--purple-soft); border-color:var(--purple)">
+        <h3 style="color:var(--purple); margin-bottom:6px">☁️ 백엔드 연결 모드 (추천)</h3>
+        <p style="font-size:13px; line-height:1.5; color:var(--ink-soft); margin-bottom:10px">
+          5명이 <strong>각자 다른 폰</strong>에서 가입해 독립적으로 사용. 관리자가 원격에서 회원 진행 확인. API 키 안전.<br>
+          (Cloudflare Workers 30~60분 사전 배포 필요)
+        </p>
+        <button class="btn" style="background:var(--purple); box-shadow: 0 4px 0 #5a35cf" onclick="activeScreen='cloud-setup'; render();">☁️ 백엔드 URL 입력 후 시작</button>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h3 style="margin-bottom:6px">📱 로컬 모드</h3>
+        <p style="font-size:13px; line-height:1.5; color:var(--ink-soft); margin-bottom:10px">
+          이 기기 1대만 사용. 같은 폰/태블릿에서 ${MAX_PROFILES}명까지 프로필 전환. 백엔드 불필요.
+        </p>
+      </div>
+    ` : ''}
+
     <input id="new-profile-name" class="input" placeholder="이름 (예: 김민수)" maxlength="20" autocomplete="off" />
-    <p style="font-size:12px; color:var(--ink-muted); margin: 8px 0">한글·영어 가능, 최대 20자</p>
-    <button class="btn" style="margin-top: 18px" onclick="createProfileSubmit(${isFirstAdmin ? 'true' : 'false'})">가입하기</button>
+    <p style="font-size:12px; color:var(--ink-muted); margin: 8px 0">${isFirstAdmin ? '관리자 이름' : '한글·영어 가능, 최대 20자'}</p>
+    <button class="btn" style="margin-top: 14px" onclick="createProfileSubmit(${isFirstAdmin ? 'true' : 'false'})">${isFirstAdmin ? '로컬 모드로 시작' : '가입하기'}</button>
     ${!isFirstAdmin ? `<button class="btn btn-ghost" style="margin-top:8px" onclick="nav('profile-picker')">← 돌아가기</button>` : ''}
   `;
   setTimeout(() => document.getElementById('new-profile-name')?.focus(), 100);
@@ -5903,6 +6002,260 @@ function adminDeleteMember(id) {
 function adminLogout() {
   activeScreen = 'profile-picker';
   render();
+}
+
+/* =========================================================
+   CLOUD MODE 화면 — 백엔드 연결 / 로그인·가입 / 관리자
+   ========================================================= */
+function renderCloudSetup() {
+  document.getElementById('main').innerHTML = `
+    <div style="padding: 26px 0 14px; text-align:center">
+      <div style="font-size:46px">☁️</div>
+      <h1 style="margin:8px 0 2px; font-family:var(--serif)">백엔드 연결</h1>
+      <p class="subtitle" style="margin: 8px auto; max-width:340px; line-height:1.5">관리자가 배포한 Cloudflare Worker URL을 입력하세요.<br>같은 URL을 입력한 회원끼리 같은 그룹이 됩니다.</p>
+    </div>
+
+    <input id="backend-url-input" class="input" placeholder="https://lingo-api.xxx.workers.dev" value="${escapeAttr(app.backendUrl)}" autocomplete="off" />
+    <p style="font-size:12px; color:var(--ink-muted); margin: 8px 0">관리자가 배포 후 알려준 주소를 정확히 붙여넣기</p>
+
+    <button class="btn" style="margin-top: 14px" onclick="cloudConnect()">연결 테스트 후 저장</button>
+
+    ${!isCloudMode() ? `<button class="btn btn-ghost" style="margin-top:8px" onclick="cloudSwitchToLocal()">← 로컬 모드로 돌아가기</button>` : ''}
+
+    <p style="font-size:12px; color:var(--ink-muted); margin-top:24px; text-align:center; line-height:1.5">
+      💡 백엔드를 처음 만드는 관리자라면 <br>worker/ 폴더의 DEPLOY.md를 따라 30분이면 가능해요.
+    </p>
+  `;
+  setTimeout(() => document.getElementById('backend-url-input')?.focus(), 100);
+}
+
+async function cloudConnect() {
+  const input = document.getElementById('backend-url-input');
+  const raw = (input?.value || '').trim().replace(/\/$/, '');
+  if (!/^https:\/\//.test(raw)) { toast('https:// 로 시작하는 URL을 입력하세요'); return; }
+  // 임시 저장 후 health 확인
+  const prev = app.backendUrl;
+  app.backendUrl = raw;
+  try {
+    const h = await cloudHealth();
+    if (!h.ok) throw new Error('health 응답 비정상');
+    app.mode = 'cloud';
+    saveApp();
+    toast(`✅ 연결됨 (회원 ${h.members}/${h.max}명${h.apiKeyConfigured ? ', API 키 OK' : ', ⚠️ 키 미설정'})`);
+    activeScreen = 'cloud-auth';
+    render();
+  } catch (e) {
+    app.backendUrl = prev;
+    saveApp();
+    toast('연결 실패: ' + e.message);
+  }
+}
+
+function cloudSwitchToLocal() {
+  app.mode = 'local';
+  saveApp();
+  activeScreen = 'profile-picker';
+  render();
+}
+
+let cloudAuthTab = 'login'; // 'login' | 'signup'
+
+function renderCloudAuth() {
+  const memberCount = (function() { return null; })(); // 동기 미사용
+  // 비동기로 health 가져와서 인원수 표시
+  setTimeout(() => {
+    cloudHealth().then(h => {
+      const slot = document.getElementById('cloud-status-slot');
+      if (slot && h.ok) slot.innerHTML = `${h.members}/${h.max}명 가입 · ${h.apiKeyConfigured ? '✅ API 키 연결됨' : '⚠️ 관리자가 키 설정 필요'}`;
+    }).catch(() => {});
+  }, 50);
+
+  const loginActive = cloudAuthTab === 'login';
+  document.getElementById('main').innerHTML = `
+    <div style="padding: 22px 0 10px; text-align:center">
+      <div style="font-size:46px">☁️</div>
+      <h1 style="margin:8px 0 2px; font-family:var(--serif)">Lingo</h1>
+      <p class="subtitle" style="font-size:13px"><span id="cloud-status-slot">백엔드 확인 중...</span></p>
+      <p style="font-size:11px; color:var(--ink-muted); margin-top:6px; word-break:break-all">${escapeHtml(app.backendUrl)}</p>
+    </div>
+
+    <div class="media-tabs" style="justify-content:center">
+      <button class="media-tab ${loginActive ? 'active' : ''}" onclick="cloudAuthTab='login'; render();">로그인</button>
+      <button class="media-tab ${!loginActive ? 'active' : ''}" onclick="cloudAuthTab='signup'; render();">회원 가입</button>
+    </div>
+
+    <input id="cloud-name" class="input" placeholder="이름" maxlength="20" value="" autocomplete="username" />
+    <p style="font-size:12px; color:var(--ink-muted); margin: 6px 0 12px">최대 20자</p>
+
+    <input id="cloud-pin" class="pin-input" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••••" autocomplete="${loginActive ? 'current-password' : 'new-password'}" />
+    <p style="font-size:12px; color:var(--ink-muted); margin: 6px 0 12px">6자리 PIN</p>
+
+    ${!loginActive ? `
+      <input id="cloud-signup-code" class="input" placeholder="초대 코드 (관리자가 설정한 경우만)" value="${escapeAttr(app.signupCode || '')}" />
+      <p style="font-size:12px; color:var(--ink-muted); margin: 6px 0 12px">초대 코드를 받지 않았다면 비워두세요</p>
+    ` : ''}
+
+    <button class="btn" style="margin-top: 8px" onclick="${loginActive ? 'doCloudLogin()' : 'doCloudSignup()'}">
+      ${loginActive ? '로그인' : '가입하고 시작'}
+    </button>
+
+    <button class="btn btn-ghost" style="margin-top: 8px" onclick="activeScreen='cloud-setup'; render();">백엔드 URL 변경</button>
+
+    ${!isCloudMode() ? `<button class="btn btn-ghost" style="margin-top: 8px" onclick="cloudSwitchToLocal()">로컬 모드 사용</button>` : ''}
+  `;
+  setTimeout(() => document.getElementById('cloud-name')?.focus(), 100);
+}
+
+async function doCloudLogin() {
+  const name = (document.getElementById('cloud-name')?.value || '').trim();
+  const pin = (document.getElementById('cloud-pin')?.value || '').trim();
+  if (!name || !/^\d{6}$/.test(pin)) { toast('이름과 6자리 PIN을 입력하세요'); return; }
+  try {
+    const res = await cloudLogin(name, pin);
+    app.cloudToken = res.token;
+    app.cloudMember = res.member;
+    app.currentId = res.member.id;
+    saveApp();
+    state = loadState();
+    if (!state.user.name) {
+      state.user.name = res.member.name;
+      saveState();
+    }
+    toast(`✅ ${res.member.name}님 로그인`);
+    activeScreen = 'home';
+    render();
+  } catch (e) { toast('로그인 실패: ' + e.message); }
+}
+
+async function doCloudSignup() {
+  const name = (document.getElementById('cloud-name')?.value || '').trim();
+  const pin = (document.getElementById('cloud-pin')?.value || '').trim();
+  const codeEl = document.getElementById('cloud-signup-code');
+  const signupCode = (codeEl?.value || '').trim();
+  if (!name || !/^\d{6}$/.test(pin)) { toast('이름과 6자리 PIN을 입력하세요'); return; }
+  try {
+    const res = await cloudSignup(name, pin, signupCode);
+    app.cloudToken = res.token;
+    app.cloudMember = res.member;
+    app.currentId = res.member.id;
+    app.signupCode = signupCode;
+    saveApp();
+    state = JSON.parse(JSON.stringify(DEFAULT_STATE));
+    state.user.name = res.member.name;
+    state.user.onboarded = true;
+    saveState();
+    toast(`✅ ${res.member.name}님 가입 완료${res.member.role === 'admin' ? ' (관리자)' : ''}`);
+    activeScreen = 'home';
+    render();
+  } catch (e) { toast('가입 실패: ' + e.message); }
+}
+
+async function doCloudLogout() {
+  if (!confirm('로그아웃하시겠어요? (학습 데이터는 이 폰에 그대로 남아요)')) return;
+  await cloudLogout();
+  activeScreen = 'cloud-auth';
+  render();
+}
+
+async function renderCloudAdmin() {
+  document.getElementById('main').innerHTML = `
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px">
+      <button class="close-btn" onclick="nav('home')">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <h2 style="flex:1">👑 관리자 페이지</h2>
+    </div>
+    <p class="subtitle" style="margin-bottom:14px">☁️ 백엔드 연결 모드 · ${escapeHtml(app.backendUrl)}</p>
+    <div id="cloud-admin-content"><div style="text-align:center; padding:40px"><div class="dots"><span></span><span></span><span></span></div></div></div>
+  `;
+  try {
+    const [healthRes, membersRes] = await Promise.all([cloudHealth(), cloudAdminMembers()]);
+    const slot = document.getElementById('cloud-admin-content');
+    if (!slot) return;
+    const rowsHtml = (membersRes.members || []).map(m => {
+      const lastA = m.lastActive ? new Date(m.lastActive).toLocaleString('ko-KR') : '-';
+      const created = m.createdAt ? new Date(m.createdAt).toLocaleDateString('ko-KR') : '-';
+      const s = m.stats || {};
+      return `
+        <div class="admin-row">
+          <div class="head">
+            <div class="avatar-sm ${m.role === 'admin' ? 'admin' : ''}">${escapeHtml(avatarChar(m.name))}</div>
+            <div class="name">${escapeHtml(m.name)} ${m.role === 'admin' ? '<span style="font-size:12px; color:var(--purple); margin-left:6px">👑</span>' : ''}</div>
+            <span style="font-size:11px; color:var(--ink-soft)">${escapeHtml(s.level || '-')}</span>
+          </div>
+          <div style="font-size:11px; color:var(--ink-muted); margin-bottom:6px">
+            가입 ${created} · 최근 ${lastA} · AI 호출 ${m.usage?.calls || 0}회
+          </div>
+          <div class="stats">
+            <div class="stat-mini"><div class="v">${s.xp || 0}</div><div class="l">XP</div></div>
+            <div class="stat-mini"><div class="v">${s.streak || 0}</div><div class="l">연속</div></div>
+            <div class="stat-mini"><div class="v">${s.totalLessons || 0}</div><div class="l">레슨</div></div>
+            <div class="stat-mini"><div class="v">${s.words || 0}</div><div class="l">단어</div></div>
+          </div>
+          <div class="actions">
+            <button onclick="cloudAdminResetPinPrompt('${escapeAttr(m.id)}','${escapeAttr(m.name)}')">PIN 리셋</button>
+            ${m.role !== 'admin' ? `<button class="danger" onclick="cloudAdminDeleteMember('${escapeAttr(m.id)}','${escapeAttr(m.name)}')">탈퇴 처리</button>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('') || '<p style="color:var(--ink-muted); text-align:center; padding:20px">회원이 없어요</p>';
+
+    slot.innerHTML = `
+      <div class="card" style="margin-bottom:14px">
+        <h3 style="margin-bottom:10px">☁️ 백엔드 상태</h3>
+        <div style="display:flex; justify-content:space-between; padding: 4px 0; font-size:14px"><span>회원 인원</span><strong>${healthRes.members} / ${healthRes.max}명</strong></div>
+        <div style="display:flex; justify-content:space-between; padding: 4px 0; font-size:14px"><span>Anthropic API 키</span><strong style="color:${healthRes.apiKeyConfigured ? 'var(--success)' : 'var(--danger)'}">${healthRes.apiKeyConfigured ? '✅ 등록됨' : '⚠️ 미설정'}</strong></div>
+        <div style="display:flex; justify-content:space-between; padding: 4px 0; font-size:14px"><span>버전</span><strong>${escapeHtml(healthRes.version || '-')}</strong></div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h3 style="margin-bottom:10px">🔐 초대 코드 (선택)</h3>
+        <p style="font-size:12px; color:var(--ink-soft); margin-bottom:8px">설정하면 신규 가입 시 이 코드를 입력해야 합니다. 비우면 누구나 가입 가능.</p>
+        <div style="display:flex; gap:8px">
+          <input id="cloud-signup-code-edit" class="input" placeholder="예: church2026" />
+          <button class="btn" style="width:auto; padding:14px 18px; text-transform:none; letter-spacing:0" onclick="cloudAdminSaveSignupCode()">저장</button>
+        </div>
+      </div>
+
+      <h3 style="margin: 10px 0">👥 회원 목록 (${(membersRes.members || []).length}명)</h3>
+      ${rowsHtml}
+
+      <button class="btn btn-ghost" style="margin-top: 20px" onclick="doCloudLogout()">🚪 로그아웃</button>
+      <p style="text-align:center; font-size:11px; color:var(--ink-muted); margin: 14px 0">
+        ※ 서버 기반 — 다른 폰에서도 같은 데이터를 봅니다.
+      </p>
+    `;
+  } catch (e) {
+    document.getElementById('cloud-admin-content').innerHTML = `<p style="color:var(--danger); text-align:center; padding:30px">불러오기 실패: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function cloudAdminResetPinPrompt(id, name) {
+  const newPin = prompt(`${name}님의 새 6자리 PIN을 입력하세요:`);
+  if (!newPin) return;
+  if (!/^\d{6}$/.test(newPin)) { toast('6자리 숫자만 입력하세요'); return; }
+  try {
+    await cloudAdminResetPin(id, newPin);
+    toast(`✅ ${name}님 PIN 변경됨`);
+  } catch (e) { toast('실패: ' + e.message); }
+}
+
+async function cloudAdminDeleteMember(id, name) {
+  if (!confirm(`${name}님을 회원에서 제외할까요?`)) return;
+  try {
+    await cloudAdminDelete(id);
+    toast(`🗑 ${name}님 제외`);
+    render();
+  } catch (e) { toast('실패: ' + e.message); }
+}
+
+async function cloudAdminSaveSignupCode() {
+  const el = document.getElementById('cloud-signup-code-edit');
+  const code = (el?.value || '').trim();
+  try {
+    await cloudAdminSetSignupCode(code);
+    toast(code ? `✅ 코드 "${code}" 설정됨` : '✅ 코드 해제됨 (자유 가입)');
+  } catch (e) { toast('실패: ' + e.message); }
 }
 
 /* ---------- INIT ---------- */

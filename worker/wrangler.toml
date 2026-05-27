@@ -1,0 +1,14 @@
+# Cloudflare Workers 설정 — wrangler CLI로 배포할 때만 사용
+# 대시보드(브라우저)에서 직접 배포할 때는 이 파일 무시해도 됩니다.
+
+name = "lingo-api"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+
+# KV 네임스페이스 — `wrangler kv:namespace create LINGO_KV` 실행 후 받은 id를 채우세요
+[[kv_namespaces]]
+binding = "LINGO_KV"
+id = "REPLACE_WITH_YOUR_KV_ID"
+
+# 비밀 변수는 코드에 넣지 마세요. 대신 명령어로:
+#   wrangler secret put ANTHROPIC_API_KEY
