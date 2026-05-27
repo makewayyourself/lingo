@@ -1436,12 +1436,10 @@
    Single-file Android-installable app
    ========================================================= */
 
-/* ---------- STATE / STORAGE (멀티 프로필 + 관리자) ---------- */
-// app-level: 프로필 목록·관리자 PIN·공용 API 키 (5명 회원 공유)
-// per-profile: 각자의 학습 상태 (lingo_profile_<id>)
+/* ---------- STATE / STORAGE (백엔드 전용) ---------- */
+// 모든 회원은 같은 백엔드(Cloudflare Worker)에 접속하고 본인의 학습 데이터는 폰에 로컬 저장
 const APP_KEY = 'lingo_app_v1';
-const STORE_KEY = 'lingo_state_v1'; // 구버전 마이그레이션용
-const MAX_PROFILES = 5;
+const BACKEND_URL = 'https://lingo-api.naimkorea.workers.dev'; // 고정된 백엔드 주소
 const profileKey = (id) => 'lingo_profile_' + id;
 
 const DEFAULT_STATE = {
@@ -1463,17 +1461,11 @@ const DEFAULT_STATE = {
 };
 
 const DEFAULT_APP = {
-  profiles: [],     // [{ id, name, role: 'admin'|'member', createdAt, lastActive }]
-  currentId: null,
-  adminPin: null,   // 6자리 (관리자가 처음 진입 시 설정) — local 모드에서만 사용
-  apiKey: '',       // 공용 Anthropic API 키 (local 모드에서만 사용; cloud에선 서버 보관)
-  ttsSpeed: 0.9,
-  // === Cloud mode (Cloudflare Worker 백엔드) ===
-  mode: 'local',          // 'local' | 'cloud'
-  backendUrl: '',         // 예: 'https://lingo-api.xxx.workers.dev'
   cloudToken: '',         // 백엔드 세션 토큰
-  cloudMember: null,      // { id, name, role } — 현재 로그인한 회원 (cloud mode)
-  signupCode: ''          // 회원이 가입 시 입력할 코드 (관리자가 백엔드에 설정한 경우)
+  cloudMember: null,      // { id, name, role } — 현재 로그인한 회원
+  currentId: null,        // == cloudMember.id (학습 데이터 저장 키)
+  signupCode: '',         // 회원이 가입 시 입력할 코드 (관리자가 설정한 경우)
+  ttsSpeed: 0.9
 };
 
 let app = loadApp();
@@ -1482,32 +1474,7 @@ let state = loadState();
 function loadApp() {
   try {
     const raw = localStorage.getItem(APP_KEY);
-    if (raw) {
-      return Object.assign({}, DEFAULT_APP, JSON.parse(raw));
-    }
-  } catch (e) {}
-  // v1 단일 상태 → 첫 관리자 프로필로 마이그레이션
-  try {
-    const oldRaw = localStorage.getItem(STORE_KEY);
-    if (oldRaw) {
-      const oldState = JSON.parse(oldRaw);
-      const id = 'p_' + Date.now();
-      localStorage.setItem(profileKey(id), oldRaw);
-      const migrated = Object.assign({}, DEFAULT_APP, {
-        profiles: [{
-          id,
-          name: oldState.user?.name || '관리자',
-          role: 'admin',
-          createdAt: Date.now(),
-          lastActive: Date.now()
-        }],
-        currentId: id,
-        apiKey: oldState.settings?.apiKey || '',
-        ttsSpeed: oldState.settings?.ttsSpeed ?? 0.9
-      });
-      localStorage.setItem(APP_KEY, JSON.stringify(migrated));
-      return migrated;
-    }
+    if (raw) return Object.assign({}, DEFAULT_APP, JSON.parse(raw));
   } catch (e) {}
   return JSON.parse(JSON.stringify(DEFAULT_APP));
 }
@@ -1521,9 +1488,8 @@ function loadState() {
   try {
     const raw = localStorage.getItem(profileKey(app.currentId));
     const merged = deepMerge(JSON.parse(JSON.stringify(DEFAULT_STATE)), raw ? JSON.parse(raw) : {});
-    // 공용 API 키 주입 (회원·관리자 동일)
-    merged.settings.apiKey = app.apiKey || '';
     merged.settings.ttsSpeed = app.ttsSpeed ?? 0.9;
+    merged.settings.apiKey = ''; // 회원 폰엔 키 저장 안 함
     return merged;
   } catch (e) {
     return JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -1533,47 +1499,25 @@ function loadState() {
 let _lastStatsSync = 0;
 function saveState() {
   if (!app || !app.currentId) return;
-  // 설정에서 API 키 편집 시 app.apiKey로 끌어올림 (관리자만, 로컬 모드만)
-  if (!isCloudMode()) {
-    const me = app.profiles.find(p => p.id === app.currentId);
-    if (me && me.role === 'admin' && state.settings.apiKey !== app.apiKey) {
-      app.apiKey = state.settings.apiKey || '';
-      saveApp();
-    }
-    if (me) {
-      me.lastActive = Date.now();
-      saveApp();
-    }
-  }
   localStorage.setItem(profileKey(app.currentId), JSON.stringify(state));
-
-  // 클라우드 모드: 30초 쓰로틀로 통계 백엔드에 동기화
-  if (isCloudMode() && app.cloudToken && Date.now() - _lastStatsSync > 30000) {
+  // 30초 쓰로틀로 통계 백엔드에 동기화
+  if (app.cloudToken && Date.now() - _lastStatsSync > 30000) {
     _lastStatsSync = Date.now();
     cloudSyncStats();
   }
 }
 
-function currentProfile() {
-  if (app.mode === 'cloud') {
-    return app.cloudMember || null;
-  }
-  if (!app.currentId) return null;
-  return app.profiles.find(p => p.id === app.currentId) || null;
-}
+function currentProfile() { return app.cloudMember || null; }
 function isAdmin() {
   const p = currentProfile();
   return p && p.role === 'admin';
 }
 
 /* =========================================================
-   CLOUD MODE / 백엔드 통신 헬퍼
+   백엔드 통신 헬퍼 — 모든 회원은 같은 BACKEND_URL 사용
    ========================================================= */
-function isCloudMode() { return app.mode === 'cloud' && !!app.backendUrl; }
-
 async function cloudFetch(path, opts) {
-  if (!app.backendUrl) throw new Error('백엔드 URL이 설정되지 않았어요');
-  const url = app.backendUrl.replace(/\/$/, '') + path;
+  const url = BACKEND_URL.replace(/\/$/, '') + path;
   const headers = Object.assign({ 'Content-Type': 'application/json' }, (opts && opts.headers) || {});
   if (app.cloudToken) headers['Authorization'] = 'Bearer ' + app.cloudToken;
   const res = await fetch(url, Object.assign({ method: 'GET' }, opts, { headers }));
@@ -1611,7 +1555,7 @@ async function cloudMe() {
   return cloudFetch('/me');
 }
 async function cloudSyncStats() {
-  if (!isCloudMode() || !app.cloudToken) return;
+  if (!app.cloudToken) return;
   const stats = {
     xp: state.stats.xp || 0,
     streak: state.stats.streak || 0,
@@ -1636,35 +1580,13 @@ async function cloudAdminSetSignupCode(code) {
   return cloudFetch('/admin/signup-code', { method: 'POST', body: JSON.stringify({ code }) });
 }
 
-/* AI 호출 통합 래퍼 — local 모드면 직접 Anthropic, cloud 모드면 백엔드 프록시 */
+/* AI 호출 — 항상 백엔드 프록시 통해서 (관리자의 API 키는 서버 보관) */
 async function aiMessagesCall(payload) {
-  if (isCloudMode()) {
-    return cloudFetch('/ai/messages', { method: 'POST', body: JSON.stringify(payload) });
-  }
-  // local 모드: 기존 동작 유지
-  const key = (app.apiKey || state.settings.apiKey || '').trim();
-  if (!key) throw new Error('API 키가 없어요');
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error('API error: ' + txt);
-  }
-  return res.json();
+  return cloudFetch('/ai/messages', { method: 'POST', body: JSON.stringify(payload) });
 }
 
-function hasAi() {
-  if (isCloudMode()) return !!app.cloudToken;
-  return !!(app.apiKey || state.settings.apiKey);
-}
+function hasAi() { return !!app.cloudToken; }
+function isCloudMode() { return true; } // 호환성을 위해 유지
 function deepMerge(base, override) {
   for (const k in override) {
     if (override[k] && typeof override[k] === 'object' && !Array.isArray(override[k]))
@@ -1833,46 +1755,20 @@ function renderTopbar() {
 }
 
 function render() {
-  // 모달 화면 (모드 관계없이) — 먼저 처리
-  if (activeScreen === 'cloud-setup')   { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderCloudSetup(); }
-  if (activeScreen === 'cloud-auth')    { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderCloudAuth(); }
-
-  // CLOUD 모드 라우팅
-  if (isCloudMode()) {
-    if (!app.cloudToken || !app.cloudMember) {
-      setChrome(false, false);
-      document.getElementById('main').scrollTop = 0;
-      return renderCloudAuth();
-    }
-    // currentId를 cloud member id로 동기화 (각 회원의 로컬 학습 데이터 키 분리)
-    if (app.currentId !== app.cloudMember.id) {
-      app.currentId = app.cloudMember.id;
-      saveApp();
-      state = loadState();
-    }
-    if (activeScreen === 'cloud-admin') { setChrome(true, false);  document.getElementById('main').scrollTop = 0; renderTopbar(); return renderCloudAdmin(); }
-  } else {
-    // 로컬 모드 — 기존 흐름
-    if (app.mode === 'cloud' && !app.backendUrl) {
-      setChrome(false, false);
-      document.getElementById('main').scrollTop = 0;
-      return renderCloudSetup();
-    }
-    if (!app.profiles || app.profiles.length === 0) {
-      setChrome(false, false);
-      document.getElementById('main').scrollTop = 0;
-      return renderProfileCreate(true /* 첫 관리자 */);
-    }
-    if (activeScreen === 'profile-picker' || !app.currentId) {
-      setChrome(false, false);
-      document.getElementById('main').scrollTop = 0;
-      return renderProfilePicker();
-    }
+  // 로그인 안 된 상태면 무조건 회원가입/로그인 화면
+  if (!app.cloudToken || !app.cloudMember) {
+    setChrome(false, false);
+    document.getElementById('main').scrollTop = 0;
+    return renderCloudAuth();
   }
-
-  if (activeScreen === 'profile-create')  { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderProfileCreate(false); }
-  if (activeScreen === 'admin-login')     { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderAdminLogin(); }
-  if (activeScreen === 'admin')           { setChrome(true, false);  document.getElementById('main').scrollTop = 0; renderTopbar(); return renderAdmin(); }
+  // 로그인된 회원의 학습 데이터 키 동기화
+  if (app.currentId !== app.cloudMember.id) {
+    app.currentId = app.cloudMember.id;
+    saveApp();
+    state = loadState();
+  }
+  if (activeScreen === 'cloud-auth')   { setChrome(false, false); document.getElementById('main').scrollTop = 0; return renderCloudAuth(); }
+  if (activeScreen === 'cloud-admin')  { setChrome(true, false);  document.getElementById('main').scrollTop = 0; renderTopbar(); return renderCloudAdmin(); }
 
   tickHearts();
   renderTopbar();
@@ -2673,7 +2569,7 @@ function renderChat() {
   if (!hasKey) {
     warnHtml = `<div class="card" style="background:var(--gold-soft); border-color:var(--gold); margin-bottom:14px">
       <strong>💡 AI 키 필요</strong>
-      <p style="margin:4px 0 10px; font-size:14px">${isCloudMode() ? '관리자가 백엔드에 API 키를 등록해야 작동해요.' : '설정에서 Anthropic API 키를 입력하세요. (없으면 기본 응답만 제공)'}</p>
+      <p style="margin:4px 0 10px; font-size:14px">관리자가 백엔드에 API 키를 등록해야 작동해요.</p>
       <button class="btn btn-ghost" style="padding:10px" onclick="nav('settings')">설정으로 이동</button>
     </div>`;
   }
@@ -3203,7 +3099,7 @@ const CURATED_CLASSICS = [
 
 async function generateReadingArticle(topicEn, topicKo) {
   if (!hasAi()) {
-    toast(isCloudMode() ? '관리자가 API 키를 아직 설정하지 않았어요' : '설정에서 Anthropic API 키를 먼저 입력해주세요');
+    toast('관리자가 API 키를 아직 설정하지 않았어요');
     return;
   }
   // Loading screen
@@ -3522,7 +3418,6 @@ function renderLibrary() {
 function renderSettings() {
   const me = currentProfile();
   const admin = isAdmin();
-  const apiKeyMasked = app.apiKey ? `••••••${app.apiKey.slice(-4)}` : '(관리자 미설정)';
 
   document.getElementById('main').innerHTML = `
     <div style="display:flex; align-items:center; gap:14px; margin-bottom: 16px">
@@ -3533,44 +3428,19 @@ function renderSettings() {
     </div>
 
     <div class="card" style="margin-bottom:14px">
-      <h3 style="margin-bottom: 10px">👤 현재 프로필</h3>
+      <h3 style="margin-bottom: 10px">👤 현재 계정</h3>
       <div style="display:flex; align-items:center; gap:12px">
         <div style="width:44px; height:44px; border-radius:50%; background:${admin ? 'var(--purple)' : 'var(--accent)'}; color:white; display:flex; align-items:center; justify-content:center; font-family:var(--serif); font-weight:700; font-size:20px">${escapeHtml(avatarChar(me?.name || ''))}</div>
         <div style="flex:1">
           <div style="font-weight:700">${escapeHtml(me?.name || '?')}</div>
-          <div style="font-size:12px; color:var(--ink-soft)">${admin ? '👑 관리자' : '회원'} · ${isCloudMode() ? '☁️ 백엔드' : '📱 로컬'}</div>
+          <div style="font-size:12px; color:var(--ink-soft)">${admin ? '👑 관리자' : '회원'} · ☁️ 백엔드 연결됨</div>
         </div>
       </div>
       <div style="display:flex; gap:8px; margin-top:14px">
-        ${isCloudMode()
-          ? `<button class="btn btn-ghost" style="flex:1" onclick="doCloudLogout()">🚪 로그아웃</button>`
-          : `<button class="btn btn-ghost" style="flex:1" onclick="nav('profile-picker')">↔ 프로필 전환</button>`}
-        ${admin
-          ? `<button class="btn" style="flex:1" onclick="nav('${isCloudMode() ? 'cloud-admin' : 'admin'}')">👑 관리자</button>`
-          : (isCloudMode() ? '' : `<button class="btn btn-ghost" style="flex:1" onclick="nav('admin-login')">🔐 관리자 진입</button>`)}
+        <button class="btn btn-ghost" style="flex:1" onclick="doCloudLogout()">🚪 로그아웃</button>
+        ${admin ? `<button class="btn" style="flex:1" onclick="nav('cloud-admin')">👑 관리자 페이지</button>` : ''}
       </div>
     </div>
-
-    ${isCloudMode() ? `
-      <div class="card" style="margin-bottom:14px">
-        <h3 style="margin-bottom: 10px">☁️ 백엔드 연결</h3>
-        <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 8px">서버 기반 — 다른 폰 회원과 같은 그룹</p>
-        <div style="background:var(--bg-muted); padding:10px 12px; border-radius:10px; font-size:12px; color:var(--ink-soft); word-break:break-all; margin-bottom:8px">${escapeHtml(app.backendUrl)}</div>
-        <button class="btn btn-ghost" style="font-size:13px" onclick="activeScreen='cloud-setup'; render();">백엔드 URL 변경</button>
-      </div>
-    ` : `
-      <div class="card">
-        <h3 style="margin-bottom: 12px">🔑 공용 AI API 키</h3>
-        ${admin ? `
-          <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">관리자만 편집 가능 — 모든 회원의 AI 기능에 사용돼요.</p>
-          <input class="input" id="api-key-input" type="password" placeholder="sk-ant-..." value="${escapeAttr(app.apiKey)}" />
-          <button class="btn" style="margin-top: 10px" onclick="saveApiKey()">저장</button>
-        ` : `
-          <p style="font-size:13px; color:var(--ink-soft); margin-bottom: 10px">관리자가 설정한 공용 키를 사용해요. 회원은 키를 볼 수 없습니다.</p>
-          <div style="background:var(--bg-muted); padding:12px 14px; border-radius:10px; font-family:monospace; color:var(--ink-soft)">${escapeHtml(apiKeyMasked)}</div>
-        `}
-      </div>
-    `}
 
     <div class="card" style="margin-top: 14px">
       <h3 style="margin-bottom: 8px">🎚 음성 속도 (TTS)</h3>
@@ -3604,18 +3474,8 @@ function renderSettings() {
       <button class="btn btn-danger" onclick="if(confirm('내 데이터를 모두 삭제할까요?')) { localStorage.removeItem(profileKey(app.currentId)); state = loadState(); render(); }">내 데이터 초기화</button>
     </div>
 
-    <p style="text-align:center; margin: 30px 0 20px; color:var(--ink-muted); font-size:12px">Lingo v2.1 · 멀티 프로필 · 설치형 웹앱</p>
+    <p style="text-align:center; margin: 30px 0 20px; color:var(--ink-muted); font-size:12px">Lingo v3.0 · 백엔드 연결 · 설치형 웹앱</p>
   `;
-}
-
-function saveApiKey() {
-  if (!isAdmin()) { toast('관리자만 변경할 수 있어요'); return; }
-  const v = document.getElementById('api-key-input').value.trim();
-  app.apiKey = v;
-  saveApp();
-  state.settings.apiKey = v;
-  saveState();
-  toast(v ? '✅ 공용 API 키가 저장됐어요' : '🗑 API 키가 삭제됐어요');
 }
 
 /* ---------- UTILITIES ---------- */
@@ -5104,7 +4964,7 @@ function toggleSaveVerse(ref, refKo) {
 
 async function explainPassage(ref, refKo) {
   if (!hasAi()) {
-    toast(isCloudMode() ? '관리자가 API 키를 아직 설정하지 않았어요' : '설정에서 Anthropic API 키를 먼저 입력해주세요');
+    toast('관리자가 API 키를 아직 설정하지 않았어요');
     return;
   }
   const slot = document.getElementById('verse-explain-slot');
@@ -5817,7 +5677,7 @@ function renderProDomain() {
 }
 
 async function generateProVocab(id) {
-  if (!hasAi()) { toast(isCloudMode() ? '관리자가 API 키를 아직 설정하지 않았어요' : '설정에서 API 키를 입력해주세요'); return; }
+  if (!hasAi()) { toast('관리자가 API 키를 아직 설정하지 않았어요'); return; }
   const d = PRO_DOMAINS.find(x => x.id === id);
   if (!d) return;
   toast('🤖 AI가 단어를 만들고 있어요...');
@@ -5842,7 +5702,7 @@ Generate 10 useful "${d.name}" (${d.one}) words. Avoid these already-included: $
 }
 
 async function generateProArticle(id) {
-  if (!hasAi()) { toast(isCloudMode() ? '관리자가 API 키를 아직 설정하지 않았어요' : '설정에서 API 키를 입력해주세요'); return; }
+  if (!hasAi()) { toast('관리자가 API 키를 아직 설정하지 않았어요'); return; }
   const d = PRO_DOMAINS.find(x => x.id === id);
   if (!d) return;
   toast('🤖 시나리오 글을 만들고 있어요...');
@@ -5869,12 +5729,13 @@ async function generateProArticle(id) {
 }
 
 /* =========================================================
-   MULTI-PROFILE / 회원 가입·전환·관리자 페이지
+   회원 가입·로그인·관리자 (백엔드 전용)
    ========================================================= */
 function avatarChar(name) {
   return (name || '?').trim().charAt(0).toUpperCase() || '?';
 }
 
+/* DELETED_LOCAL_MODE_START
 function renderProfilePicker() {
   const cards = app.profiles.map(p => {
     const isCurrent = p.id === app.currentId;
@@ -6229,57 +6090,55 @@ async function cloudConnect() {
   }
 }
 
-function cloudSwitchToLocal() {
-  app.mode = 'local';
-  saveApp();
-  activeScreen = 'profile-picker';
-  render();
-}
+DELETED_LOCAL_MODE_END */
 
-let cloudAuthTab = 'login'; // 'login' | 'signup'
+let cloudAuthTab = 'signup'; // 기본은 회원 가입
 
 function renderCloudAuth() {
-  const memberCount = (function() { return null; })(); // 동기 미사용
-  // 비동기로 health 가져와서 인원수 표시
+  // 비동기로 백엔드 인원수·상태 가져와서 표시
   setTimeout(() => {
     cloudHealth().then(h => {
       const slot = document.getElementById('cloud-status-slot');
-      if (slot && h.ok) slot.innerHTML = `${h.members}/${h.max}명 가입 · ${h.apiKeyConfigured ? '✅ API 키 연결됨' : '⚠️ 관리자가 키 설정 필요'}`;
-    }).catch(() => {});
+      if (slot && h.ok) slot.innerHTML = `${h.members}/${h.max}명 가입 · ${h.apiKeyConfigured ? '✅ AI 사용 가능' : '⚠️ 관리자가 키 설정 필요'}`;
+    }).catch(() => {
+      const slot = document.getElementById('cloud-status-slot');
+      if (slot) slot.innerHTML = '⚠️ 백엔드 연결 실패 — 잠시 후 다시 시도해주세요';
+    });
   }, 50);
 
-  const loginActive = cloudAuthTab === 'login';
+  const signupActive = cloudAuthTab === 'signup';
   document.getElementById('main').innerHTML = `
-    <div style="padding: 22px 0 10px; text-align:center">
-      <div style="font-size:46px">☁️</div>
-      <h1 style="margin:8px 0 2px; font-family:var(--serif)">Lingo</h1>
-      <p class="subtitle" style="font-size:13px"><span id="cloud-status-slot">백엔드 확인 중...</span></p>
-      <p style="font-size:11px; color:var(--ink-muted); margin-top:6px; word-break:break-all">${escapeHtml(app.backendUrl)}</p>
+    <div style="padding: 28px 0 14px; text-align:center">
+      <div style="font-size:54px">📚</div>
+      <h1 style="margin:8px 0 4px; font-family:var(--serif)">Lingo</h1>
+      <p class="subtitle" style="font-size:14px; line-height:1.5">함께 영어 공부하는 그룹에 참여하세요</p>
+      <p class="subtitle" style="font-size:12px; color:var(--ink-muted); margin-top:6px"><span id="cloud-status-slot">백엔드 확인 중...</span></p>
     </div>
 
-    <div class="media-tabs" style="justify-content:center">
-      <button class="media-tab ${loginActive ? 'active' : ''}" onclick="cloudAuthTab='login'; render();">로그인</button>
-      <button class="media-tab ${!loginActive ? 'active' : ''}" onclick="cloudAuthTab='signup'; render();">회원 가입</button>
+    <div class="media-tabs" style="justify-content:center; margin-bottom:18px">
+      <button class="media-tab ${signupActive ? 'active' : ''}" onclick="cloudAuthTab='signup'; render();">📝 회원 가입</button>
+      <button class="media-tab ${!signupActive ? 'active' : ''}" onclick="cloudAuthTab='login'; render();">🔓 로그인</button>
     </div>
 
-    <input id="cloud-name" class="input" placeholder="이름" maxlength="20" value="" autocomplete="username" />
-    <p style="font-size:12px; color:var(--ink-muted); margin: 6px 0 12px">최대 20자</p>
+    <input id="cloud-name" class="input" placeholder="이름 (예: 김민수)" maxlength="20" value="" autocomplete="username" />
+    <p style="font-size:12px; color:var(--ink-muted); margin: 6px 0 12px">${signupActive ? '본인 이름 — 최대 20자' : '가입할 때 입력한 이름'}</p>
 
-    <input id="cloud-pin" class="pin-input" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••••" autocomplete="${loginActive ? 'current-password' : 'new-password'}" />
-    <p style="font-size:12px; color:var(--ink-muted); margin: 6px 0 12px">6자리 PIN</p>
+    <input id="cloud-pin" class="pin-input" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••••" autocomplete="${signupActive ? 'new-password' : 'current-password'}" />
+    <p style="font-size:12px; color:var(--ink-muted); margin: 6px 0 12px">${signupActive ? '나만의 6자리 PIN (잊지 마세요)' : '6자리 PIN'}</p>
 
-    ${!loginActive ? `
+    ${signupActive ? `
       <input id="cloud-signup-code" class="input" placeholder="초대 코드 (관리자가 설정한 경우만)" value="${escapeAttr(app.signupCode || '')}" />
       <p style="font-size:12px; color:var(--ink-muted); margin: 6px 0 12px">초대 코드를 받지 않았다면 비워두세요</p>
     ` : ''}
 
-    <button class="btn" style="margin-top: 8px" onclick="${loginActive ? 'doCloudLogin()' : 'doCloudSignup()'}">
-      ${loginActive ? '로그인' : '가입하고 시작'}
+    <button class="btn" style="margin-top: 8px" onclick="${signupActive ? 'doCloudSignup()' : 'doCloudLogin()'}">
+      ${signupActive ? '✨ 가입하고 시작' : '🔓 로그인'}
     </button>
 
-    <button class="btn btn-ghost" style="margin-top: 8px" onclick="activeScreen='cloud-setup'; render();">백엔드 URL 변경</button>
-
-    ${!isCloudMode() ? `<button class="btn btn-ghost" style="margin-top: 8px" onclick="cloudSwitchToLocal()">로컬 모드 사용</button>` : ''}
+    <p style="font-size:11px; color:var(--ink-muted); margin-top:24px; text-align:center; line-height:1.6">
+      💡 첫 가입자는 자동으로 관리자가 되어 다른 회원의 진행을 확인할 수 있어요.<br>
+      가입 정원 5명. 다른 폰에서 같은 이름·PIN으로 로그인하면 같은 계정.
+    </p>
   `;
   setTimeout(() => document.getElementById('cloud-name')?.focus(), 100);
 }
@@ -6343,7 +6202,7 @@ async function renderCloudAdmin() {
       </button>
       <h2 style="flex:1">👑 관리자 페이지</h2>
     </div>
-    <p class="subtitle" style="margin-bottom:14px">☁️ 백엔드 연결 모드 · ${escapeHtml(app.backendUrl)}</p>
+    <p class="subtitle" style="margin-bottom:14px; word-break:break-all">☁️ ${escapeHtml(BACKEND_URL)}</p>
     <div id="cloud-admin-content"><div style="text-align:center; padding:40px"><div class="dots"><span></span><span></span><span></span></div></div></div>
   `;
   try {

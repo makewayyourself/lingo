@@ -1,19 +1,22 @@
-# Lingo — 나만의 AI 영어 튜터 v2.2
+# Lingo — 나만의 AI 영어 튜터 v3.0
 
-개인/소그룹 사용을 위한 **설치형 웹앱**. 안드로이드 홈 화면에 추가해 앱처럼 쓸 수 있어요.
+소그룹 영어 학습용 **설치형 웹앱** (안드로이드 홈 화면 추가 가능).
+**5명이 각자 다른 폰**에서 같은 계정으로 학습하고 관리자가 원격으로 진행 확인.
 
-**v2.2**: 두 가지 운영 모드 — **로컬 모드**(한 기기 5명) 또는 **백엔드 연결 모드**(다른 폰 각각 독립)
+**v3.0**: 백엔드 전용 — 로컬 모드 제거, 모든 회원 같은 Cloudflare Worker 연결.
 
 ```
 lingo/
 ├── index.html      ← 앱 본체
 ├── sw.js           ← 오프라인 캐시
 ├── README.md
-└── worker/         ← 선택 — 백엔드 연결 모드용
+└── worker/         ← 백엔드 (필수)
     ├── worker.js   ← Cloudflare Workers 코드
     ├── wrangler.toml
     └── DEPLOY.md   ← 30분 배포 가이드
 ```
+
+**백엔드 주소**: `https://lingo-api.naimkorea.workers.dev` (index.html에 하드코딩)
 
 ```
 lingo/
