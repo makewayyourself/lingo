@@ -1,0 +1,22 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs / 임시
+*.log
+*.tmp
+
+# 개인 정보 (혹시라도)
+.env
+.env.local
+secrets.json
+
+# Claude Code 로컬 설정
+.claude/
