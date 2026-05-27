@@ -2707,12 +2707,16 @@ async function callClaude(userMessage) {
 {"en": "your English reply, max 2 sentences, simple words appropriate for ${state.user.level}", "ko": "Korean translation of the English reply"}
 Be conversational, ask follow-up questions, gently correct major errors (mention briefly in the ko part). Stay encouraging.`;
 
-    const messages = [
-      ...chatHistory.slice(-10).filter(m => m.role !== 'system').map(m => ({
-        role: m.role,
-        content: m.content
-      }))
-    ];
+    let messages = chatHistory
+      .slice(-10)
+      .filter(m => m.role !== 'system')
+      .map(m => ({ role: m.role, content: m.content }));
+    // Anthropic API는 첫 메시지가 반드시 user여야 함.
+    // 화면 표시용 assistant 인사말이 첫 메시지면 떨궈서 user부터 시작하게 함.
+    while (messages.length > 0 && messages[0].role !== 'user') messages.shift();
+    if (messages.length === 0) {
+      messages = [{ role: 'user', content: userMessage }];
+    }
 
     const data = await aiMessagesCall({
       model: 'claude-haiku-4-5-20251001',
