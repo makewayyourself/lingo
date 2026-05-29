@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#fef9f3">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Lingo — 나만의 AI 영어 튜터</title>
 
-<!-- PWA Manifest inline -->
-<link rel="manifest" href='data:application/manifest+json,{"name":"Lingo English Tutor","short_name":"Lingo","start_url":"./","display":"standalone","background_color":"%23fef9f3","theme_color":"%23fef9f3","orientation":"portrait","icons":[{"src":"data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 192 192%22><rect width=%22192%22 height=%22192%22 rx=%2240%22 fill=%22%23ff6b3d%22/><text x=%2296%22 y=%22130%22 font-size=%22110%22 text-anchor=%22middle%22 font-family=%22serif%22 fill=%22white%22 font-weight=%22bold%22>L</text></svg>","sizes":"192x192","type":"image/svg+xml"}]}'>
+<link rel="manifest" href="./manifest.webmanifest">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1441,9 +1441,15 @@
 const APP_KEY = 'lingo_app_v1';
 const BACKEND_URL = 'https://lingo-api.naimkorea.workers.dev'; // 고정된 백엔드 주소
 const profileKey = (id) => 'lingo_profile_' + id;
+const STORAGE_LIMITS = {
+  dictCache: 120,
+  verseCache: 50,
+  explainCache: 20,
+  readingHistory: 20
+};
 
 const DEFAULT_STATE = {
-  user: { name: '', level: null, dailyGoal: 50, onboarded: false },
+  user: { name: '', level: null, dailyGoal: 50, onboarded: false, assessment: null },
   stats: { xp: 0, streak: 0, lastStudyDate: null, hearts: 5, lastHeartRegen: Date.now(), totalLessons: 0, totalCorrect: 0, totalAttempts: 0, gems: 0 },
   progress: {}, // { unitId: { lessonsCompleted: [0,1,2], stars: { lessonIdx: 1-3 } } }
   srs: {},      // { wordKey: { interval, ease, repetitions, nextReview } }
@@ -1456,7 +1462,7 @@ const DEFAULT_STATE = {
   mediaSeen: {}, // { mediaId: { addedAt, notes } }
   bible: { lastReadDate: null, savedVerses: [], readDays: 0, verseCache: {}, explainCache: {}, cursor: { bookIdx: 0, chapter: 1, verse: 1 } }, // 매일 3구절씩 순차 묵상
   vocabTest: { totalTests: 0, totalQuestions: 0, totalCorrect: 0, lastMissed: [], lastTestDate: null }, // 단어 외움 확인
-  profession: { generated: {} }, // 분야별 AI 확장 단어 캐시
+  profession: { generated: {}, businessTrainer: { packDate: '', dailyWords: [], hiddenMeaning: false, quiz: null, reviewPlan: {} } }, // 분야별 AI 확장 단어 캐시
   settings: { ttsSpeed: 0.9, apiKey: '' } // apiKey는 app.apiKey에서 동기화됨
 };
 
@@ -1480,7 +1486,11 @@ function loadApp() {
 }
 
 function saveApp() {
-  localStorage.setItem(APP_KEY, JSON.stringify(app));
+  try {
+    localStorage.setItem(APP_KEY, JSON.stringify(app));
+  } catch (e) {
+    console.warn('saveApp failed:', e && e.message ? e.message : e);
+  }
 }
 
 function loadState() {
@@ -1497,14 +1507,54 @@ function loadState() {
 }
 
 let _lastStatsSync = 0;
+
+function trimObjectEntries(obj, maxEntries) {
+  if (!obj || typeof obj !== 'object') return obj;
+  const keys = Object.keys(obj);
+  if (keys.length <= maxEntries) return obj;
+  const keep = new Set(keys.slice(-maxEntries));
+  const out = {};
+  keys.forEach(k => {
+    if (keep.has(k)) out[k] = obj[k];
+  });
+  return out;
+}
+
+function compactStateForStorage() {
+  state.dictCache = trimObjectEntries(state.dictCache || {}, STORAGE_LIMITS.dictCache);
+  state.bible = state.bible || {};
+  state.bible.verseCache = trimObjectEntries(state.bible.verseCache || {}, STORAGE_LIMITS.verseCache);
+  state.bible.explainCache = trimObjectEntries(state.bible.explainCache || {}, STORAGE_LIMITS.explainCache);
+  state.readingHistory = Array.isArray(state.readingHistory)
+    ? state.readingHistory.slice(-STORAGE_LIMITS.readingHistory)
+    : [];
+}
+
 function saveState() {
   if (!app || !app.currentId) return;
-  localStorage.setItem(profileKey(app.currentId), JSON.stringify(state));
+  try {
+    localStorage.setItem(profileKey(app.currentId), JSON.stringify(state));
+  } catch (e) {
+    // 모바일 브라우저 localStorage 한도를 넘기면 저장이 전부 실패하므로 캐시를 줄이고 1회 재시도
+    compactStateForStorage();
+    try {
+      localStorage.setItem(profileKey(app.currentId), JSON.stringify(state));
+    } catch (e2) {
+      console.error('saveState failed:', e2 && e2.message ? e2.message : e2);
+      return;
+    }
+  }
   // 30초 쓰로틀로 통계 백엔드에 동기화
   if (app.cloudToken && Date.now() - _lastStatsSync > 30000) {
     _lastStatsSync = Date.now();
     cloudSyncStats();
   }
+}
+
+async function cloudSyncStatsNow() {
+  if (!app.cloudToken) return;
+  _lastStatsSync = Date.now();
+  await cloudSyncStats();
 }
 
 function currentProfile() { return app.cloudMember || null; }
@@ -1524,14 +1574,20 @@ async function cloudFetch(path, opts) {
   let data = null;
   try { data = await res.json(); } catch (e) {}
   if (!res.ok) {
-    const msg = (data && data.error) || ('HTTP ' + res.status);
-    if (res.status === 401 || /로그인이 필요/.test(msg)) {
+    function pickMsg(v) {
+      if (!v) return null;
+      if (typeof v === 'string') return v || null;
+      if (typeof v === 'object') return pickMsg(v.message) || pickMsg(v.type) || pickMsg(v.error) || JSON.stringify(v).slice(0, 300);
+      return String(v) || null;
+    }
+    const msg = pickMsg(data && data.error) || pickMsg(data && data.message) || ('HTTP ' + res.status);
+    if (res.status === 401 || /로그인이 필요/.test(String(msg))) {
       // 세션 만료 → 로그아웃 처리
       app.cloudToken = '';
       app.cloudMember = null;
       saveApp();
     }
-    throw new Error(msg);
+    throw new Error(String(msg));
   }
   return data;
 }
@@ -1582,7 +1638,19 @@ async function cloudAdminSetSignupCode(code) {
 
 /* AI 호출 — 항상 백엔드 프록시 통해서 (관리자의 API 키는 서버 보관) */
 async function aiMessagesCall(payload) {
-  return cloudFetch('/ai/messages', { method: 'POST', body: JSON.stringify(payload) });
+  await ensureAiReady();
+  const requestedModel = (payload && payload.model) ? payload.model : BALANCED_MODEL;
+  const primaryPayload = Object.assign({}, payload, { model: requestedModel });
+  try {
+    return await cloudFetch('/ai/messages', { method: 'POST', body: JSON.stringify(primaryPayload) });
+  } catch (e) {
+    const msg = String(e && e.message ? e.message : e);
+    if (/model|not_found|invalid_request|unsupported/i.test(msg) && FAST_MODEL && FAST_MODEL !== requestedModel) {
+      const fallbackPayload = Object.assign({}, payload, { model: FAST_MODEL });
+      return cloudFetch('/ai/messages', { method: 'POST', body: JSON.stringify(fallbackPayload) });
+    }
+    throw e;
+  }
 }
 
 function hasAi() { return !!app.cloudToken; }
@@ -1594,6 +1662,63 @@ function deepMerge(base, override) {
     else base[k] = override[k];
   }
   return base;
+}
+
+function extractAiText(data) {
+  if (!data) return '';
+  if (typeof data === 'string') return data;
+  if (Array.isArray(data.content)) {
+    return data.content
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part.text === 'string') return part.text;
+        return '';
+      })
+      .join('\n')
+      .trim();
+  }
+  if (typeof data.text === 'string') return data.text.trim();
+  return '';
+}
+
+function parseAiJson(data) {
+  const raw = extractAiText(data).replace(/```json|```/gi, '').trim();
+  if (!raw) throw new Error('AI 응답이 비어 있어요');
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    throw new Error('AI 응답을 JSON으로 해석하지 못했어요');
+  }
+}
+
+function baseLevel(level) {
+  return String(level || 'A1').replace('+', '');
+}
+
+function currentAiLevel() {
+  return baseLevel(state.user.level || 'A1');
+}
+
+const FAST_MODEL = 'claude-haiku-4-5-20251001';
+const BALANCED_MODEL = 'claude-sonnet-4-6';
+const POWER_MODEL = 'claude-opus-4-8';
+let _lastAiSessionCheck = 0;
+
+async function ensureAiReady() {
+  if (!app.cloudToken) throw new Error('AI 기능을 사용하려면 다시 로그인해주세요.');
+  if (Date.now() - _lastAiSessionCheck < 60000) return;
+  try {
+    await cloudMe();
+    _lastAiSessionCheck = Date.now();
+  } catch (e) {
+    const msg = String(e && e.message ? e.message : e);
+    if (/로그인이 필요/.test(msg)) {
+      throw new Error('세션이 만료됐어요. 다시 로그인해주세요.');
+    }
+    throw e;
+  }
 }
 
 /* ---------- HEART REGEN ---------- */
@@ -1717,18 +1842,22 @@ const ASSESSMENT_BANK = [
   { level: 'A1', prompt: '"Hello, ___ are you?"', choices: ['How', 'What', 'Where', 'When'], answer: 0 },
   { level: 'A1', prompt: '"apple"의 뜻은?', choices: ['사과', '바나나', '포도', '오렌지'], answer: 0 },
   { level: 'A1', prompt: '"I ___ a student."', choices: ['am', 'is', 'are', 'be'], answer: 0 },
+  { level: 'A1', prompt: '"This ___ my book."', choices: ['is', 'are', 'am', 'be'], answer: 0 },
   // A2 (elementary)
   { level: 'A2', prompt: '"Yesterday, I ___ to the park."', choices: ['went', 'go', 'going', 'gone'], answer: 0 },
   { level: 'A2', prompt: '"She is ___ than me."', choices: ['taller', 'tall', 'tallest', 'more tall'], answer: 0 },
   { level: 'A2', prompt: '"Where ___ you from?"', choices: ['are', 'is', 'do', 'have'], answer: 0 },
+  { level: 'A2', prompt: '"I usually ___ breakfast at 7."', choices: ['eat', 'eats', 'ate', 'eating'], answer: 0 },
   // B1 (intermediate)
   { level: 'B1', prompt: '"If I ___ rich, I would travel."', choices: ['were', 'am', 'was', 'be'], answer: 0 },
   { level: 'B1', prompt: '"I\'ve been waiting ___ 2 hours."', choices: ['for', 'since', 'during', 'from'], answer: 0 },
   { level: 'B1', prompt: '"She doesn\'t know what to do, ___ she?"', choices: ['does', 'doesn\'t', 'is', 'has'], answer: 0 },
+  { level: 'B1', prompt: '"The book ___ I bought was expensive."', choices: ['that', 'what', 'where', 'whose'], answer: 0 },
   // B2 (upper-intermediate)
   { level: 'B2', prompt: '"It\'s raining cats and dogs"의 뜻은?', choices: ['비가 매우 많이 온다', '동물들이 떨어진다', '비가 그쳤다', '날씨가 좋다'], answer: 0 },
   { level: 'B2', prompt: '"Despite ___ tired, he kept working."', choices: ['being', 'he was', 'he is', 'to be'], answer: 0 },
-  { level: 'B2', prompt: '"I wish I ___ harder in school."', choices: ['had studied', 'studied', 'would study', 'study'], answer: 0 }
+  { level: 'B2', prompt: '"I wish I ___ harder in school."', choices: ['had studied', 'studied', 'would study', 'study'], answer: 0 },
+  { level: 'B2', prompt: '"Hardly ___ the meeting started when the fire alarm rang."', choices: ['had', 'has', 'did', 'was'], answer: 0 }
 ];
 
 /* ---------- SCREENS / NAVIGATION ---------- */
@@ -1876,11 +2005,11 @@ function renderAssessment() {
 }
 
 function shuffleAssessment() {
-  // 레벨별로 3문항씩 뽑고, 각 문항의 보기 순서도 무작위로 섞어 정답 위치 분산
+  // 레벨별로 4문항씩 뽑고, 각 문항의 보기 순서도 무작위로 섞어 정답 위치 분산
   const byLevel = { A1:[], A2:[], B1:[], B2:[] };
   ASSESSMENT_BANK.forEach(q => byLevel[q.level].push(q));
   Object.values(byLevel).forEach(arr => arr.sort(() => Math.random() - 0.5));
-  const picked = [...byLevel.A1.slice(0,3), ...byLevel.A2.slice(0,3), ...byLevel.B1.slice(0,3), ...byLevel.B2.slice(0,3)];
+  const picked = [...byLevel.A1.slice(0,4), ...byLevel.A2.slice(0,4), ...byLevel.B1.slice(0,4), ...byLevel.B2.slice(0,4)];
   // 각 문제의 보기를 셔플하면서 answer 인덱스 재매핑
   return picked.map(q => {
     const correctText = q.choices[q.answer];
@@ -1910,19 +2039,27 @@ function answerAssessment(choiceIdx) {
 }
 
 function finishAssessment() {
-  // Compute level: highest band with >=2/3 correct
+  // 가중치 기반으로 세분화된 레벨 산정
   const scores = { A1:0, A2:0, B1:0, B2:0 };
   const counts = { A1:0, A2:0, B1:0, B2:0 };
+  const totalQuestions = assessState.answers.length;
   assessState.answers.forEach(a => {
     counts[a.level]++;
     if (a.correct) scores[a.level]++;
   });
+  const totalCorrect = assessState.answers.filter(a => a.correct).length;
+  const weighted = scores.A1 * 1 + scores.A2 * 2 + scores.B1 * 3 + scores.B2 * 4;
   let level = 'A1';
-  ['A1','A2','B1','B2'].forEach(lv => {
-    if (counts[lv] && (scores[lv] / counts[lv]) >= 0.66) level = lv;
-  });
+  if (weighted >= 29) level = 'B2+';
+  else if (weighted >= 24) level = 'B2';
+  else if (weighted >= 19) level = 'B1+';
+  else if (weighted >= 14) level = 'B1';
+  else if (weighted >= 10) level = 'A2+';
+  else if (weighted >= 6) level = 'A2';
+  else if (weighted >= 3) level = 'A1+';
 
   state.user.level = level;
+  state.user.assessment = { level, totalCorrect, totalQuestions, weighted, scores, counts };
   saveState();
   updateStreak();
   assessState = null;
@@ -1938,6 +2075,10 @@ function finishAssessment() {
         <div style="font-family:var(--serif); font-size:64px; font-weight:900; line-height:1; margin: 4px 0">${level}</div>
         <div style="font-size:14px; opacity:0.9">${levelLabel(level)}</div>
       </div>
+      <div class="card" style="margin-top:18px; text-align:left; max-width:340px; margin-left:auto; margin-right:auto">
+        <div style="font-size:13px; color:var(--ink-soft); margin-bottom:8px">총 ${totalCorrect}/${totalQuestions} 정답 · 가중치 ${weighted}점</div>
+        <div style="font-size:13px; line-height:1.6">A1 ${scores.A1}/${counts.A1} · A2 ${scores.A2}/${counts.A2} · B1 ${scores.B1}/${counts.B1} · B2 ${scores.B2}/${counts.B2}</div>
+      </div>
       <p style="margin: 28px 0 0; color: var(--ink-soft); max-width: 280px">${levelAdvice(level)}</p>
       <button class="btn" style="margin-top: 28px" onclick="completeOnboarding()">학습 시작하기 🚀</button>
     </div>
@@ -1945,15 +2086,19 @@ function finishAssessment() {
 }
 
 function levelLabel(lv) {
-  return ({A1:'초급 입문', A2:'초급', B1:'중급 입문', B2:'중급'})[lv];
+  return ({A1:'초급 입문', 'A1+':'초급 확장', A2:'초급', 'A2+':'초급 상단', B1:'중급 입문', 'B1+':'중급 확장', B2:'중상급', 'B2+':'중상급 확장'})[lv] || '초급 입문';
 }
 function levelAdvice(lv) {
   return ({
     A1: '기초부터 차근차근 시작할게요. Unit 1의 인사말부터 함께 해봐요.',
+    'A1+': '기초 문장은 이해하고 있어요. 짧은 회화와 기본 문법을 더 촘촘히 다져볼 단계예요.',
     A2: '기본 회화가 가능한 수준이에요. 어휘와 시제를 보강해봐요.',
+    'A2+': '기본 문장은 안정적이에요. 비교급, 연결 표현, 짧은 읽기를 늘리면 빠르게 올라갑니다.',
     B1: '일상 대화가 가능하시군요! AI 대화 모드를 적극 활용해보세요.',
-    B2: '꽤 잘하시네요. AI 대화로 자연스러움을 다듬어보세요.'
-  })[lv];
+    'B1+': '실용 회화는 충분합니다. 읽기와 듣기에서 긴 문장을 처리하는 연습이 필요해요.',
+    B2: '꽤 잘하시네요. AI 대화로 자연스러움을 다듬어보세요.',
+    'B2+': '상당히 안정적입니다. 미묘한 뉘앙스와 고급 표현을 다듬는 단계예요.'
+  })[lv] || '기초부터 차근차근 시작할게요.';
 }
 
 function resetAssessment() { assessState = null; render(); }
@@ -2672,7 +2817,7 @@ Be conversational, ask follow-up questions, gently correct major errors (mention
     }
 
     const data = await aiMessagesCall({
-      model: 'claude-haiku-4-5-20251001',
+      model: BALANCED_MODEL,
       max_tokens: 300,
       system: systemPrompt,
       messages: messages
@@ -2999,24 +3144,25 @@ async function generateExamples(word) {
   slot.innerHTML = `<div style="padding:12px; text-align:center"><div class="dots"><span></span><span></span><span></span></div></div>`;
   try {
     const data = await aiMessagesCall({
-      model: 'claude-haiku-4-5-20251001',
+      model: FAST_MODEL,
       max_tokens: 400,
-      system: `You generate 3 example sentences for a Korean English learner at CEFR ${state.user.level} level. Reply ONLY in JSON (no markdown): {"examples":[{"en":"sentence using the word","ko":"Korean translation"}]}`,
-      messages: [{ role: 'user', content: `Generate 3 short, natural example sentences using the word "${word}" appropriate for ${state.user.level} level. Each under 12 words.` }]
+      system: `You generate 3 example sentences for a Korean English learner at CEFR ${currentAiLevel()} level. Reply ONLY in JSON (no markdown): {"examples":[{"en":"sentence using the word","ko":"Korean translation"}]}`,
+      messages: [{ role: 'user', content: `Generate 3 short, natural example sentences using the word "${word}" appropriate for ${currentAiLevel()} level. Each under 12 words.` }]
     });
-    const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(text);
+    const parsed = parseAiJson(data);
+    const examples = Array.isArray(parsed.examples) ? parsed.examples : [];
+    if (examples.length === 0) throw new Error('예문이 비어 있어요');
     slot.innerHTML = `
       <div class="ai-examples-box">
         <div style="font-size:11px; font-weight:700; color:var(--success); letter-spacing:0.06em; text-transform:uppercase; margin-bottom:8px">AI 생성 예문 (Tatoeba 스타일)</div>
-        ${parsed.examples.map(ex => `
+        ${examples.map(ex => `
           <div class="ai-example">${makeTappableText(ex.en)}</div>
           <div class="ai-example-ko">${escapeHtml(ex.ko)}</div>
         `).join('')}
       </div>
     `;
   } catch(e) {
-    slot.innerHTML = `<div style="padding:10px; font-size:13px; color:var(--ink-soft)">예문 생성 실패. 다시 시도해보세요.</div>`;
+    slot.innerHTML = `<div style="padding:10px; font-size:13px; color:var(--ink-soft)">예문 생성 실패: ${escapeHtml(e.message || '다시 시도해보세요.')}</div>`;
   }
 }
 
@@ -3025,11 +3171,11 @@ async function aiTranslateWord(word) {
   if (!hasAi()) return null;
   try {
     const data = await aiMessagesCall({
-      model: 'claude-haiku-4-5-20251001',
+      model: FAST_MODEL,
       max_tokens: 100,
       messages: [{ role: 'user', content: `Translate "${word}" to Korean. Reply ONLY with the Korean translation, no explanation.` }]
     });
-    return (data.content?.[0]?.text || '').trim();
+    return extractAiText(data).trim();
   } catch(e) { return null; }
 }
 
@@ -3112,23 +3258,22 @@ async function generateReadingArticle(topicEn, topicKo) {
     </div>
     <div style="text-align:center; padding: 60px 20px">
       <div class="dots" style="margin-bottom:20px"><span></span><span></span><span></span></div>
-      <p style="color:var(--ink-soft)">AI가 ${state.user.level} 레벨의 글을 작성하고 있어요</p>
+      <p style="color:var(--ink-soft)">AI가 ${currentAiLevel()} 레벨의 글을 작성하고 있어요</p>
     </div>
   `;
 
   try {
     const data = await aiMessagesCall({
-      model: 'claude-haiku-4-5-20251001',
+      model: BALANCED_MODEL,
       max_tokens: 800,
-      system: `Generate a short English reading passage for a Korean learner at CEFR ${state.user.level} level. Use vocabulary and sentence structures appropriate for that level. Reply ONLY in JSON: {"title":"engaging title","content":"3-4 paragraphs separated by \\n\\n","summary_ko":"한 줄 한국어 요약"}`,
-      messages: [{ role: 'user', content: `Write a ${state.user.level} level reading passage about: ${topicEn}. Approx 150-250 words. Make it engaging and useful for vocabulary learning.` }]
+      system: `Generate a short English reading passage for a Korean learner at CEFR ${currentAiLevel()} level. Use vocabulary and sentence structures appropriate for that level. Reply ONLY in JSON: {"title":"engaging title","content":"3-4 paragraphs separated by \\n\\n","summary_ko":"한 줄 한국어 요약"}`,
+      messages: [{ role: 'user', content: `Write a ${currentAiLevel()} level reading passage about: ${topicEn}. Approx 150-250 words. Make it engaging and useful for vocabulary learning.` }]
     });
-    const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(text);
+    const parsed = parseAiJson(data);
 
     const article = {
-      title: parsed.title,
-      content: parsed.content,
+      title: parsed.title || `${topicKo} 읽기`,
+      content: parsed.content || extractAiText(data),
       summary: parsed.summary_ko || '',
       level: state.user.level,
       source: 'AI',
@@ -3156,9 +3301,9 @@ async function generateReadingArticle(topicEn, topicKo) {
         <h3 style="color:var(--danger); margin-bottom:8px">⚠️ AI 글 생성에 실패했어요</h3>
         <p style="font-size:13px; word-break:break-word; margin-bottom:10px">${escapeHtml(errMsg)}</p>
         <p style="font-size:12px; color:var(--ink-muted); line-height:1.5">
-          • 로컬 모드: 설정에서 API 키가 유효한지 확인<br>
-          • 클라우드 모드: 백엔드의 /health에서 apiKeyConfigured: true 확인<br>
-          • Anthropic 결제·잔액 확인
+          • 백엔드의 /health에서 apiKeyConfigured: true 확인<br>
+          • Anthropic 결제·잔액 확인<br>
+          • 네트워크 연결 확인
         </p>
         <button class="btn btn-ghost" style="margin-top:14px" onclick="nav('reading')">읽기 목록으로</button>
       </div>
@@ -3181,17 +3326,16 @@ async function openClassic(bookId, title, author) {
   if (hasAi()) {
     try {
       const data = await aiMessagesCall({
-        model: 'claude-haiku-4-5-20251001',
+        model: BALANCED_MODEL,
         max_tokens: 800,
-        system: `You produce a simplified excerpt of a classic English novel for a CEFR ${state.user.level} Korean learner. Reply ONLY in JSON: {"content":"3-4 short paragraphs of the opening, simplified vocabulary appropriate for ${state.user.level}","summary_ko":"한국어 요약 1-2 문장"}`,
-        messages: [{ role: 'user', content: `Produce a ${state.user.level}-level simplified version of the opening of "${title}" by ${author} (Project Gutenberg #${bookId}). Keep the story's spirit, simplify vocabulary and grammar for the learner.` }]
+        system: `You produce a simplified excerpt of a classic English novel for a CEFR ${currentAiLevel()} Korean learner. Reply ONLY in JSON: {"content":"3-4 short paragraphs of the opening, simplified vocabulary appropriate for ${currentAiLevel()}","summary_ko":"한국어 요약 1-2 문장"}`,
+        messages: [{ role: 'user', content: `Produce a ${currentAiLevel()}-level simplified version of the opening of "${title}" by ${author} (Project Gutenberg #${bookId}). Keep the story's spirit, simplify vocabulary and grammar for the learner.` }]
       });
       {
-        const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
-        const parsed = JSON.parse(text);
+        const parsed = parseAiJson(data);
         const article = {
           title: `${title} (간소화 버전)`,
-          content: parsed.content,
+          content: parsed.content || extractAiText(data),
           summary: parsed.summary_ko || '',
           level: state.user.level,
           source: 'Gutenberg + AI',
@@ -3257,6 +3401,7 @@ function renderReadingView() {
       <h3>${escapeHtml(art.title)}</h3>
       ${art.summary ? `<p style="font-style:italic; color:var(--ink-soft); padding:10px 14px; background:var(--bg-muted); border-radius:10px; font-size:14px; margin-bottom:14px">📝 ${escapeHtml(art.summary)}</p>` : ''}
       ${paragraphs.map(p => `<p>${makeTappableText(p)}</p>`).join('')}
+      ${art.korean ? `<div class="grammar-section" style="margin-top:18px"><h4>🇰🇷 한국어 번역</h4><p style="line-height:1.7; color:var(--ink-soft)">${escapeHtml(art.korean)}</p></div>` : ''}
     </div>
 
     <p style="margin-top:24px; padding: 14px; background: var(--blue-soft); border-radius:12px; font-size:13px; color:var(--ink-soft); text-align:center">
@@ -4159,6 +4304,7 @@ function renderGrammarDetail() {
   const g = currentGrammar;
   if (!g) return nav('grammar');
   const mastered = state.grammarProgress[g.id]?.mastered;
+  const wordOrderGuide = getGrammarWordOrderGuide(g);
   const exHtml = g.examples.map(e => `
     <div class="grammar-example">
       <div class="en">${escapeHtml(e.en)}</div>
@@ -4189,6 +4335,15 @@ function renderGrammarDetail() {
     </div>
 
     <div class="grammar-section">
+      <h4>↔ 한글 어순 vs 영어 어순</h4>
+      <div class="grammar-example">
+        <div class="en">영어: ${escapeHtml(wordOrderGuide.en)}</div>
+        <div class="ko">한국어: ${escapeHtml(wordOrderGuide.ko)}</div>
+      </div>
+      <p style="font-size:14px; color:var(--ink-soft); line-height:1.6; margin:10px 0 0">${escapeHtml(wordOrderGuide.tip)}</p>
+    </div>
+
+    <div class="grammar-section">
       <h4>🔍 자세히</h4>
       <ul style="padding-left:20px; font-size:14px">${detailHtml}</ul>
     </div>
@@ -4202,6 +4357,29 @@ function renderGrammarDetail() {
       📝 퀴즈 풀기 (3문제)
     </button>
   `;
+}
+
+function getGrammarWordOrderGuide(g) {
+  const title = g.title || '';
+  if (/be 동사/.test(title)) {
+    return {
+      en: 'I am a student. = 주어 + be동사 + 보어',
+      ko: '나는 학생이다. = 주어 + 보어 + 서술어',
+      tip: '한국어는 서술어가 맨 뒤에 가지만 영어는 be동사가 주어 바로 뒤에 옵니다. 그래서 영어 문장은 초반에 동사부터 잡는 습관이 중요합니다.'
+    };
+  }
+  if (/부정문/.test(title)) {
+    return {
+      en: 'I do not eat meat. = 주어 + do not + 동사 + 목적어',
+      ko: '나는 고기를 안 먹는다. = 주어 + 목적어 + 안 + 동사',
+      tip: '한국어는 부정 표현이 동사 앞쪽이나 끝쪽에서 자연스럽게 움직이지만 영어는 do/does not이 주어 뒤에 바로 들어갑니다. 본동사는 다시 원형으로 돌아갑니다.'
+    };
+  }
+  return {
+    en: 'I like coffee. = 주어 + 동사 + 목적어',
+    ko: '나는 커피를 좋아한다. = 주어 + 목적어 + 동사',
+    tip: '한국어는 핵심 동사가 끝에 오지만 영어는 동사가 앞에 나옵니다. 영어 문장을 읽거나 만들 때는 주어 다음 동사를 먼저 찾으면 구조가 훨씬 빨리 보입니다.'
+  };
 }
 
 let grammarQuizState = null;
@@ -4564,6 +4742,12 @@ const MEDIA_RESOURCES = {
   song: [
     { id: 's1', title: 'Twinkle Twinkle Little Star (전래 동요)', level: 'A1', desc: '가장 기본 동요. 발음·라임 익히기 좋음. (퍼블릭 도메인)',
       lyrics: 'Twinkle twinkle little star, How I wonder what you are. Up above the world so high, Like a diamond in the sky.',
+      glossary: [
+        { en: 'twinkle', ko: '반짝이다' },
+        { en: 'wonder', ko: '궁금해하다' },
+        { en: 'diamond in the sky', ko: '하늘의 다이아몬드처럼 반짝이는 별' }
+      ],
+      grammar: ['How I wonder what you are = 감탄 표현 + 간접의문문 구조', 'Like a diamond in the sky = 전치사구가 이미지처럼 붙는 표현'],
       url: 'https://www.youtube.com/results?search_query=Twinkle+Twinkle+little+star' },
     { id: 's2', title: 'Let It Be — The Beatles', level: 'A2-B1', desc: '느리고 분명한 발음. 위로의 노래.',
       keywords: [
@@ -4593,6 +4777,13 @@ const MEDIA_RESOURCES = {
   fairytale: [
     { id: 'f1', title: 'The Tortoise and the Hare (토끼와 거북이)', level: 'A1-A2', desc: '이솝 우화. 짧고 교훈적.',
       text: 'A hare made fun of a tortoise for being slow. The tortoise challenged him to a race. The hare ran fast then took a nap. The tortoise kept walking slowly and won the race. Slow and steady wins the race.',
+      glossary: [
+        { en: 'made fun of', ko: '~을 놀리다' },
+        { en: 'challenge', ko: '도전하다' },
+        { en: 'take a nap', ko: '낮잠을 자다' },
+        { en: 'slow and steady', ko: '느리지만 꾸준한' }
+      ],
+      grammar: ['made fun of = 동사구 표현. fun 하나만 번역하면 안 되고 전체를 숙어처럼 읽어야 합니다.', 'kept walking = keep + 동사ing, 계속 ~하다', 'won the race = win + 목적어 구조, 영어는 동사가 목적어보다 먼저 옵니다.'],
       url: 'https://www.gutenberg.org/files/19994/19994-h/19994-h.htm' },
     { id: 'f2', title: 'The Ugly Duckling (미운 오리 새끼)', level: 'A2', desc: '안데르센. 자존감과 정체성.',
       keywords: [
@@ -4616,6 +4807,13 @@ const MEDIA_RESOURCES = {
       url: 'https://www.gutenberg.org/files/2591/2591-h/2591-h.htm' },
     { id: 'f5', title: "The Boy Who Cried Wolf (양치기 소년)", level: 'A1', desc: '이솝. 거짓말의 교훈.',
       text: 'A shepherd boy watched sheep. He cried "Wolf!" to trick the villagers. They came, but there was no wolf. He did it again. The villagers were angry. One day, a real wolf came. He cried "Wolf!" but no one came. The wolf ate the sheep.',
+      glossary: [
+        { en: 'shepherd', ko: '양치기' },
+        { en: 'trick', ko: '속이다' },
+        { en: 'villager', ko: '마을 사람' },
+        { en: 'no one came', ko: '아무도 오지 않았다' }
+      ],
+      grammar: ['to trick the villagers = to부정사가 목적/의도를 나타냅니다.', 'there was no wolf = there is/was 구조로 존재를 말합니다.', 'no one came = 부정대명사 no one이 주어라서 동사는 단수 취급합니다.'],
       url: 'https://www.gutenberg.org/files/19994/19994-h/19994-h.htm' },
     { id: 'f6', title: 'Aesop\'s Fables (이솝 우화 전집)', level: 'A2-B1', desc: 'Project Gutenberg 무료 전집 (수백 편 수록).',
       url: 'https://www.gutenberg.org/ebooks/11339' },
@@ -4676,6 +4874,13 @@ function renderMediaDetail() {
   const m = currentMedia;
   if (!m) return nav('media');
   const tabLabel = MEDIA_TAB_LABELS[m._tab];
+  const glossaryHtml = (m.glossary || []).map(item => `
+    <div class="grammar-example">
+      <div class="en">${escapeHtml(item.en)}</div>
+      <div class="ko">${escapeHtml(item.ko)}</div>
+    </div>
+  `).join('');
+  const grammarHtml = (m.grammar || []).map(line => `<li style="margin-bottom:6px; line-height:1.5">${escapeHtml(line)}</li>`).join('');
   const kwHtml = (m.keywords || []).map(k => {
     if (typeof k === 'object' && k !== null && k.en) {
       return `
@@ -4703,6 +4908,12 @@ function renderMediaDetail() {
       <button class="btn btn-ghost" style="margin-top:10px" onclick="speak(${JSON.stringify(m.lyrics).replace(/"/g,'&quot;')})">🔊 읽어주기</button>
     </div>
   ` : '';
+  const songCopyrightNote = m._tab === 'song' && !m.lyrics ? `
+    <div class="grammar-section">
+      <h4>ℹ️ 가사 학습 안내</h4>
+      <p style="font-size:14px; color:var(--ink-soft); line-height:1.6">저작권이 있는 곡은 앱 안에 전체 가사를 내장하지 않았어요. 대신 핵심 표현을 먼저 익히고, 아래 외부 링크에서 전체 가사를 보며 따라 읽는 방식으로 학습할 수 있게 했습니다.</p>
+    </div>
+  ` : '';
   document.getElementById('main').innerHTML = `
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px">
       <button class="close-btn" onclick="nav('media')">
@@ -4717,6 +4928,9 @@ function renderMediaDetail() {
     ${kwHtml ? `<div class="grammar-section"><h4>🔑 핵심 표현</h4>${kwHtml}</div>` : ''}
     ${textBlock}
     ${lyricsBlock}
+    ${songCopyrightNote}
+    ${glossaryHtml ? `<div class="grammar-section"><h4>🧠 단어 / 숙어 풀이</h4>${glossaryHtml}</div>` : ''}
+    ${grammarHtml ? `<div class="grammar-section"><h4>📐 문법 설명</h4><ul style="padding-left:20px; font-size:14px">${grammarHtml}</ul></div>` : ''}
 
     <a href="${escapeAttr(m.url)}" target="_blank" rel="noopener" style="display:block; text-decoration:none; margin-top:14px">
       <button class="btn">${m._tab === 'song' || m._tab === 'fairytale' || m._tab === 'movie' || m._tab === 'drama' ? '🔗 영상/원문 보러가기' : '🔗 자세히 보기'}</button>
@@ -4899,6 +5113,13 @@ async function renderBible() {
       <button onclick="speakPassage()">🔊 읽어주기</button>
       <button onclick="toggleSaveVerse('${escapeAttr(ref)}','${escapeAttr(refKo)}')">${isSaved ? '✅ 저장됨' : '⭐ 저장'}</button>
     </div>
+    <div class="card" style="margin-top:12px; padding:12px 14px">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px">
+        <strong style="font-size:14px">읽기 속도</strong>
+        <span style="font-size:13px; color:var(--ink-soft)" id="bible-tts-speed-val">${(state.settings?.ttsSpeed || 0.9).toFixed(2)}x</span>
+      </div>
+      <input type="range" min="0.6" max="1.2" step="0.05" value="${state.settings?.ttsSpeed || 0.9}" oninput="state.settings.ttsSpeed = +this.value; saveState(); document.getElementById('bible-tts-speed-val').textContent = (+this.value).toFixed(2) + 'x';" style="width:100%; margin-top:10px" />
+    </div>
     <div class="verse-actions">
       <button onclick="goBackVerse()" ${_bibleCursorHistory.length === 0 ? 'disabled style="opacity:0.5"' : ''}>◀ 이전</button>
       <button class="primary" onclick="advanceToNext()" style="background:var(--accent); color:white; border-color:var(--accent)">⏭ 다음 ${VERSES_PER_DAY}구절</button>
@@ -5002,13 +5223,12 @@ async function explainPassage(ref, refKo) {
 - 응답은 반드시 valid JSON 한 객체만.`;
     const userMsg = `Passage reference: ${ref} (${refKo})\nFull text (WEB):\n${passage.text}\n\nIndividual verses:\n${passage.verses.map(v => `${v.verse}. ${v.text.trim()}`).join('\n')}`;
     const data = await aiMessagesCall({
-      model: 'claude-haiku-4-5-20251001',
+      model: POWER_MODEL,
       max_tokens: 2000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMsg }]
     });
-    const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(text);
+    const parsed = parseAiJson(data);
     state.bible.explainCache[ref] = parsed;
     const keys = Object.keys(state.bible.explainCache);
     if (keys.length > 30) delete state.bible.explainCache[keys[0]];
@@ -5018,9 +5238,33 @@ async function explainPassage(ref, refKo) {
     renderPassageExplain(parsed, ref);
   } catch (e) {
     console.error(e);
-    const errMsg = (e && e.message) ? e.message.slice(0, 200) : '알 수 없는 오류';
+    const errMsg = normalizeErrorMessage(e).slice(0, 320);
     slot.innerHTML = `<div class="card" style="margin-top:14px"><h3 style="color:var(--danger); margin-bottom:8px">⚠️ 풀이 실패</h3><p style="font-size:13px; word-break:break-word">${escapeHtml(errMsg)}</p><p style="font-size:12px; color:var(--ink-muted); margin-top:10px">로컬 모드: 설정에서 API 키 확인 · 클라우드 모드: 백엔드/health 응답에 apiKeyConfigured: true 인지 확인</p></div>`;
   }
+}
+
+function normalizeErrorMessage(err) {
+  function pickMsg(v) {
+    if (v == null) return null;
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        const m = pickMsg(item);
+        if (m) return m;
+      }
+      return null;
+    }
+    if (typeof v === 'object') {
+      return pickMsg(v.message) || pickMsg(v.error) || pickMsg(v.details) || pickMsg(v.type) || (() => {
+        try { return JSON.stringify(v); } catch (e) { return String(v); }
+      })();
+    }
+    return String(v);
+  }
+
+  const fromErr = (err && typeof err === 'object') ? (pickMsg(err.message) || pickMsg(err.error)) : null;
+  return fromErr || pickMsg(err) || '알 수 없는 오류';
 }
 
 function renderPassageExplain(parsed, ref) {
@@ -5237,8 +5481,8 @@ function renderVocabTest() {
       <br>틀린 단어는 SRS interval이 1일로 리셋되고 즉시 복습 큐에 들어갑니다.
     </div>
 
-    <button class="btn" onclick="startVocabTest()" ${totalAvailable < 4 ? 'disabled' : ''}>
-      ${totalAvailable < 4 ? '단어가 충분치 않아요 (4개 이상 필요)' : '▶ 테스트 시작 (10문제)'}
+    <button class="btn" onclick="startVocabTest()" ${totalAvailable < 1 ? 'disabled' : ''}>
+      ${totalAvailable < 1 ? '단어가 아직 없어요' : `▶ 테스트 시작 (${Math.min(10, Math.max(1, due || totalAvailable))}문제)`}
     </button>
 
     ${missedHtml}
@@ -5247,7 +5491,7 @@ function renderVocabTest() {
 
 function startVocabTest() {
   const words = gatherTestWords(10);
-  if (words.length < 4) { toast('단어가 너무 적어요. 먼저 단어를 저장하거나 레슨을 진행하세요.'); return; }
+  if (words.length < 1) { toast('먼저 단어를 저장하거나 레슨을 진행하세요.'); return; }
   const pool = words.slice();
   // 오답 후보 풀 (틀린 보기용)
   const allOthers = [
@@ -5628,18 +5872,158 @@ function openProDomain(id) {
   render();
 }
 
+function getBusinessDomain() {
+  return PRO_DOMAINS.find(d => d.id === 'business');
+}
+
+function ensureBusinessTrainer() {
+  state.profession = state.profession || {};
+  state.profession.businessTrainer = state.profession.businessTrainer || { packDate: '', dailyWords: [], hiddenMeaning: false, quiz: null, reviewPlan: {} };
+  return state.profession.businessTrainer;
+}
+
+function getBusinessWordPool() {
+  const d = getBusinessDomain();
+  return [...(d?.words || []), ...((state.profession.generated.business || []))].filter(Boolean);
+}
+
+function getBusinessWordByEn(en) {
+  return getBusinessWordPool().find(w => w.en.toLowerCase() === String(en).toLowerCase()) || null;
+}
+
+function getBusinessDailyWords() {
+  const trainer = ensureBusinessTrainer();
+  const pool = getBusinessWordPool();
+  if (!pool.length) return [];
+  if (trainer.packDate !== todayKey() || !Array.isArray(trainer.dailyWords) || trainer.dailyWords.length < 5) {
+    const start = (new Date().getDate() * 3) % pool.length;
+    const picked = [];
+    for (let i = 0; i < Math.min(5, pool.length); i++) {
+      picked.push(pool[(start + i) % pool.length].en);
+    }
+    trainer.packDate = todayKey();
+    trainer.dailyWords = Array.from(new Set(picked));
+    trainer.quiz = null;
+    saveState();
+  }
+  return trainer.dailyWords.map(getBusinessWordByEn).filter(Boolean);
+}
+
+function businessImageHint(word) {
+  const map = {
+    agenda: '회의실 화이트보드에 오늘 안건이 적혀 있는 장면',
+    deadline: '달력에 빨간색 마감 표시가 된 장면',
+    revenue: '매출 그래프가 올라가는 대시보드 장면',
+    stakeholder: '회의 테이블에 이해관계자가 둘러앉은 장면',
+    proposal: '표지에 Proposal 이 적힌 제안서 문서',
+    milestone: '프로젝트 타임라인에 깃발이 꽂힌 장면'
+  };
+  return map[word.toLowerCase()] || `${word}를 실제 업무 장면 하나로 떠올려 보세요.`;
+}
+
+function businessMarkForReview(en) {
+  const word = getBusinessWordByEn(en);
+  if (!word) return;
+  const trainer = ensureBusinessTrainer();
+  const labels = ['10분', '1일', '3일', '7일'];
+  const gaps = [10 * 60 * 1000, 1 * 86400000, 3 * 86400000, 7 * 86400000];
+  trainer.reviewPlan[en] = labels.map((label, idx) => ({ label, dueAt: Date.now() + gaps[idx] }));
+  updateSrs({ en: word.en, ko: word.ko }, false);
+  saveState();
+  toast(`🔔 ${en} 복습 계획 저장`);
+  render();
+}
+
+function businessNextReview(en) {
+  const trainer = ensureBusinessTrainer();
+  const plan = trainer.reviewPlan[en] || [];
+  const next = plan.find(p => p.dueAt > Date.now()) || plan[0];
+  return next ? `다음 복습 ${next.label}` : '복습 계획 없음';
+}
+
+function startBusinessQuiz(onlyMissed) {
+  const trainer = ensureBusinessTrainer();
+  const sourceWords = onlyMissed && trainer.quiz && trainer.quiz.missed.length
+    ? trainer.quiz.missed.map(m => getBusinessWordByEn(m.en)).filter(Boolean)
+    : getBusinessDailyWords();
+  const pool = getBusinessWordPool();
+  trainer.quiz = {
+    questions: sourceWords.map(target => {
+      const distractors = pool
+        .filter(x => x.en.toLowerCase() !== target.en.toLowerCase() && x.ko && x.ko !== target.ko)
+        .sort(() => Math.random() - 0.5)
+        .slice(0, 3);
+      const choices = [target.ko, ...distractors.map(d => d.ko)].sort(() => Math.random() - 0.5);
+      return { en: target.en, ko: target.ko, choices, answerIdx: choices.indexOf(target.ko) };
+    }),
+    idx: 0,
+    correct: 0,
+    answered: false,
+    lastAnswer: -1,
+    missed: []
+  };
+  saveState();
+  render();
+}
+
+function answerBusinessQuiz(idx) {
+  const trainer = ensureBusinessTrainer();
+  const quiz = trainer.quiz;
+  if (!quiz || quiz.answered) return;
+  const q = quiz.questions[quiz.idx];
+  quiz.answered = true;
+  quiz.lastAnswer = idx;
+  if (idx === q.answerIdx) {
+    quiz.correct++;
+    businessMarkForReview(q.en);
+  } else {
+    quiz.missed.push({ en: q.en, ko: q.ko });
+  }
+  saveState();
+  render();
+}
+
+function nextBusinessQuiz() {
+  const trainer = ensureBusinessTrainer();
+  const quiz = trainer.quiz;
+  if (!quiz) return;
+  if (quiz.idx + 1 < quiz.questions.length) {
+    quiz.idx++;
+    quiz.answered = false;
+    quiz.lastAnswer = -1;
+    saveState();
+    render();
+    return;
+  }
+  toast(`비즈니스 퀴즈 완료 · ${quiz.correct}/${quiz.questions.length} 정답`);
+  saveState();
+  render();
+}
+
+function toggleBusinessMeanings() {
+  const trainer = ensureBusinessTrainer();
+  trainer.hiddenMeaning = !trainer.hiddenMeaning;
+  saveState();
+  render();
+}
+
 function renderProDomain() {
   const d = currentProDomain;
   if (!d) return nav('pro');
   const generated = state.profession.generated[d.id] || [];
   const savedLower = (state.savedWords || []).map(s => s.word.toLowerCase());
+  const trainer = d.id === 'business' ? ensureBusinessTrainer() : null;
+  const dailyWords = d.id === 'business' ? getBusinessDailyWords() : [];
+  const dueReviewCount = d.id === 'business'
+    ? Object.values(trainer.reviewPlan || {}).flat().filter(item => item.dueAt <= Date.now()).length
+    : 0;
   const renderItem = (w) => {
     const isSaved = savedLower.includes(w.en.toLowerCase());
     return `
       <div class="pro-vocab-item">
         <div class="head">
           <div style="flex:1; min-width:0">
-            <div class="word">${escapeHtml(w.en)}${w.pos ? `<span class="pos">${escapeHtml(w.pos)}</span>` : ''}</div>
+            <div class="word">${escapeHtml(w.en)}${w.pos ? ` <span class="pos">${escapeHtml(w.pos)}</span>` : ''}</div>
             <div class="ko">${escapeHtml(w.ko || '')}</div>
             ${w.ex ? `<div class="ex">"${escapeHtml(w.ex)}"</div>` : ''}
           </div>
@@ -5652,6 +6036,57 @@ function renderProDomain() {
   };
   const basicHtml = d.words.map(renderItem).join('');
   const aiHtml = generated.length ? generated.map(renderItem).join('') : '';
+  const businessQuiz = d.id === 'business' && trainer.quiz ? trainer.quiz : null;
+  const businessQuizHtml = businessQuiz ? (() => {
+    const q = businessQuiz.questions[businessQuiz.idx];
+    return `
+      <div class="card" style="margin-bottom:14px">
+        <h3 style="margin-bottom:8px">뜻 가리기 퀴즈</h3>
+        <p style="font-size:13px; color:var(--ink-soft); margin-bottom:12px">${businessQuiz.idx + 1}/${businessQuiz.questions.length} · 틀린 단어는 자동으로 다시 나옵니다.</p>
+        <div style="font-size:22px; font-weight:800; margin-bottom:12px">${escapeHtml(q.en)}</div>
+        ${q.choices.map((choice, idx) => {
+          const isCorrect = idx === q.answerIdx;
+          const isWrong = businessQuiz.answered && idx === businessQuiz.lastAnswer && idx !== q.answerIdx;
+          const bg = isCorrect && businessQuiz.answered ? 'var(--success-soft)' : isWrong ? 'var(--danger-soft)' : 'var(--bg-card)';
+          const border = isCorrect && businessQuiz.answered ? 'var(--success)' : isWrong ? 'var(--danger)' : 'var(--line)';
+          return `<button onclick="answerBusinessQuiz(${idx})" ${businessQuiz.answered ? 'disabled' : ''} style="width:100%; text-align:left; padding:12px 14px; border:2px solid ${border}; background:${bg}; border-radius:12px; margin-bottom:8px; font-family:var(--sans); cursor:pointer">${escapeHtml(choice)}</button>`;
+        }).join('')}
+        ${businessQuiz.answered ? `<button class="btn" style="margin-top:8px" onclick="nextBusinessQuiz()">${businessQuiz.idx + 1 < businessQuiz.questions.length ? '다음 문제' : '퀴즈 마무리'}</button>` : ''}
+        ${businessQuiz.missed.length ? `<button class="btn btn-ghost" style="margin-top:8px" onclick="startBusinessQuiz(true)">틀린 단어만 다시</button>` : ''}
+      </div>
+    `;
+  })() : '';
+  const businessLabHtml = d.id === 'business' ? `
+    <div class="card" style="margin-bottom:14px; background:linear-gradient(135deg,var(--blue-soft),var(--gold-soft)); border-color:var(--blue)">
+      <h3 style="margin-bottom:10px">7개 핵심 학습 기능</h3>
+      <p style="font-size:13px; line-height:1.6; color:var(--ink-soft)">하루 5개 자동 제공 · 단어별 연상 이미지 · 쉬운 예문 · 따라 말하기 · 뜻 가리기 퀴즈 · 10분/1일/3일/7일 복습 계획 · 틀린 단어 재출제</p>
+      <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap">
+        <button class="btn" style="width:auto; padding:12px 16px; text-transform:none; letter-spacing:0" onclick="startBusinessQuiz(false)">오늘 5개 퀴즈 시작</button>
+        <button class="btn btn-ghost" style="width:auto; padding:12px 16px; text-transform:none; letter-spacing:0" onclick="toggleBusinessMeanings()">${trainer.hiddenMeaning ? '뜻 보이기' : '뜻 가리기'}</button>
+      </div>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:10px">현재 복습 알림 ${dueReviewCount}개</p>
+    </div>
+    ${businessQuizHtml}
+    <h3 style="margin: 10px 0 8px">📅 오늘의 5개 단어</h3>
+    ${dailyWords.map(w => `
+      <div class="pro-vocab-item">
+        <div class="head" style="align-items:flex-start">
+          <div style="flex:1; min-width:0">
+            <div class="word">${escapeHtml(w.en)}${w.pos ? ` <span class="pos">${escapeHtml(w.pos)}</span>` : ''}</div>
+            <div class="ko">${trainer.hiddenMeaning ? '뜻 가리기 중' : escapeHtml(w.ko || '')}</div>
+            <div class="ex">연상 이미지: ${escapeHtml(businessImageHint(w.en))}</div>
+            <div class="ex">쉬운 예문: "${escapeHtml(w.ex || '')}"</div>
+            <div class="ex">${escapeHtml(businessNextReview(w.en))} · 10분 · 1일 · 3일 · 7일</div>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
+          <button onclick="speak('${escapeAttr(w.en)}')" style="background:var(--blue-soft); color:var(--blue); border:none; padding:8px 12px; border-radius:10px; cursor:pointer">따라 말하기</button>
+          <button onclick="businessMarkForReview('${escapeAttr(w.en)}')" style="background:var(--gold-soft); color:#8a6300; border:none; padding:8px 12px; border-radius:10px; cursor:pointer">복습 계획 시작</button>
+          <button onclick="saveBibleVocab('${escapeAttr(w.en)}','${escapeAttr(w.ko || '')}', this)" style="background:var(--accent-soft); color:var(--accent-dark); border:none; padding:8px 12px; border-radius:10px; cursor:pointer">단어장 저장</button>
+        </div>
+      </div>
+    `).join('')}
+  ` : '';
   document.getElementById('main').innerHTML = `
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px">
       <button class="close-btn" onclick="nav('pro')">
@@ -5661,6 +6096,8 @@ function renderProDomain() {
       <h2 style="flex:1">${escapeHtml(d.name)}</h2>
     </div>
     <p class="subtitle" style="margin-bottom:14px">${escapeHtml(d.one)} · 기본 ${d.words.length}개${generated.length ? ` + AI ${generated.length}개` : ''}</p>
+
+    ${businessLabHtml}
 
     <h3 style="margin: 10px 0 8px">📌 기본 단어</h3>
     ${basicHtml}
@@ -5690,9 +6127,8 @@ async function generateProVocab(id) {
   ]
 }
 Generate 10 useful "${d.name}" (${d.one}) words. Avoid these already-included: ${existing.join(', ')}. Level: intermediate (B1-B2). Korean translation should be clear and concise.`;
-    const data = await aiMessagesCall({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate 10 ${d.name} vocabulary terms.` }] });
-    const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(text);
+    const data = await aiMessagesCall({ model: BALANCED_MODEL, max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate 10 ${d.name} vocabulary terms.` }] });
+  const parsed = parseAiJson(data);
     state.profession.generated[id] = (state.profession.generated[id] || []).concat(parsed.words || []);
     state.stats.xp += 8;
     saveState();
@@ -5709,13 +6145,12 @@ async function generateProArticle(id) {
   try {
     const systemPrompt = `Generate a short, realistic English passage (120-180 words) about a "${d.name}" (${d.one}) scenario for Korean learners at ${state.user.level} level. Then provide Korean translation. Respond in JSON:
 { "title": "글 제목 (한국어)", "scenario": "한국어로 시나리오 설명 1문장", "text": "영어 본문", "korean": "한국어 번역" }`;
-    const data = await aiMessagesCall({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate a ${d.name} scenario passage.` }] });
-    const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(text);
+    const data = await aiMessagesCall({ model: BALANCED_MODEL, max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: `Generate a ${d.name} scenario passage.` }] });
+    const parsed = parseAiJson(data);
     state.readingHistory = state.readingHistory || [];
     state.readingHistory.push({
       title: parsed.title || `${d.name} 시나리오`,
-      content: parsed.text || '',
+      content: parsed.text || extractAiText(data),
       korean: parsed.korean || '',
       level: state.user.level,
       source: `AI · ${d.name}`,
@@ -6002,6 +6437,10 @@ window.addEventListener('load', () => {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {/* file:// 일 땐 무시 */});
   }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') cloudSyncStatsNow();
+  });
+  window.addEventListener('pagehide', () => { cloudSyncStatsNow(); });
   render();
   setupPullToRefresh();
 });

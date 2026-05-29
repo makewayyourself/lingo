@@ -103,7 +103,7 @@ async function authAdmin(env, request) {
 }
 
 /* ---------- Handlers ---------- */
-async function handleHealth(env) {
+async function handleHealth(request, env) {
   const cfg = await getConfig(env);
   return {
     ok: true,
@@ -230,6 +230,22 @@ async function handleAiProxy(request, env) {
     body: bodyText
   });
   const respText = await upstream.text();
+  if (!upstream.ok) {
+    let parsed = null;
+    try { parsed = JSON.parse(respText); } catch (e) {}
+    const requestId = upstream.headers.get('request-id') || upstream.headers.get('x-request-id') || null;
+    const errorType = parsed?.error?.type || parsed?.type || null;
+    const errorCode = parsed?.error?.code || parsed?.code || null;
+    const message = parsed?.error?.message || parsed?.message || respText || ('Anthropic API HTTP ' + upstream.status);
+    const detail = [errorType, errorCode, requestId].filter(Boolean).join(' | ');
+    return jsonResponse({
+      ok: false,
+      error: detail ? (message + ' [' + detail + ']') : message,
+      upstreamStatus: upstream.status,
+      upstreamError: parsed?.error || parsed || null,
+      requestId
+    }, upstream.status, request.headers.get('Origin'));
+  }
   return new Response(respText, {
     status: upstream.status,
     headers: {

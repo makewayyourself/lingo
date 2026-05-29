@@ -1,0 +1,3 @@
+앱(배포본): https://makewayyourself.github.io/lingo/
+백엔드 API: https://lingo-api.naimkorea.workers.dev
+상태 확인(헬스체크): https://lingo-api.naimkorea.workers.dev/health
