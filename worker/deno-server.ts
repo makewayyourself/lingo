@@ -1,30 +1,50 @@
 /* =========================================================
-   Lingo Backend — Deno Deploy 버전
-   (Cloudflare Worker egress 가 Anthropic 게이트웨이에 403
-    "Request not allowed" 로 차단되어 Deno Deploy 로 이전)
+   Lingo Backend — Deno Deploy + Upstash Redis 버전
 
-   worker.js 와 로직 동일. 차이점:
-     - 실행: export default fetch → Deno.serve
-     - 시크릿: env.ANTHROPIC_API_KEY → Deno.env.get('ANTHROPIC_API_KEY')
-     - 저장소: Cloudflare KV → Deno KV (Deno.openKv)
+   배경:
+     - Cloudflare Worker → Anthropic 경로가 게이트웨이에서 403
+       "Request not allowed" 로 차단 → Deno Deploy 로 이전
+     - 새 Deno Deploy(EA, *.deno.net)는 Deno KV 미지원 →
+       Deno.openKv() 가 인스턴스별 인메모리로 떨어져 회원/세션이
+       영속 안 됨(members 값이 0/1 출렁) → 저장소를 Upstash Redis 로 교체
 
-   배포 (Deno Deploy 대시보드):
-     1) https://dash.deno.com → New Project
-     2) 이 파일을 엔트리포인트로 (GitHub 연결 또는 Playground 붙여넣기)
-     3) Settings → Environment Variables 에
-          ANTHROPIC_API_KEY = sk-ant-...  (새로 발급한 키)
-     4) KV: Deno Deploy 는 Deno.openKv() 자동 제공 (별도 설정 불필요)
+   worker.js 와 로직 동일. 저장만 Upstash Redis REST(값=JSON 문자열).
 
-   ⚠️ Cloudflare KV 의 기존 회원/세션은 Deno KV 로 자동 이전되지 않음.
-      회원들은 앱에서 다시 회원가입(이름+PIN) 필요. (소그룹이라 부담 적음)
+   필요 환경변수 (Deno Deploy > Settings > Environment Variables):
+     - ANTHROPIC_API_KEY        (새로 발급한 Anthropic 키)
+     - UPSTASH_REDIS_REST_URL   (Upstash 콘솔 > Database > REST API)
+     - UPSTASH_REDIS_REST_TOKEN (위와 같은 화면의 토큰)
+
+   Upstash 무료 DB 만들기:
+     1) https://console.upstash.com → Create Database (Redis, Global/Regional 아무거나)
+     2) 생성 후 "REST API" 섹션의 UPSTASH_REDIS_REST_URL / _TOKEN 복사
+     3) 위 두 값을 Deno Deploy 환경변수에 등록
    ========================================================= */
 
 const MAX_MEMBERS = 5;
 const SESSION_TTL_DAYS = 30;
 const SESSION_TTL_SEC = SESSION_TTL_DAYS * 24 * 60 * 60;
-const SESSION_TTL_MS = SESSION_TTL_SEC * 1000;
 
-const kv = await Deno.openKv();
+const UPSTASH_URL = Deno.env.get('UPSTASH_REDIS_REST_URL');
+const UPSTASH_TOKEN = Deno.env.get('UPSTASH_REDIS_REST_TOKEN');
+
+/* ---------- Upstash Redis REST ---------- */
+async function redis(...args) {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+    throw new Error('저장소 미설정: Deno Deploy 환경변수에 UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN 을 등록해주세요');
+  }
+  const res = await fetch(UPSTASH_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + UPSTASH_TOKEN,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(args.map(a => String(a)))
+  });
+  const data = await res.json();
+  if (data && data.error) throw new Error('Redis: ' + data.error);
+  return data ? data.result : null;
+}
 
 const corsHeaders = (origin) => ({
   'Access-Control-Allow-Origin': origin || '*',
@@ -59,20 +79,20 @@ function newMemberId() {
   return 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
 
-/* ---------- KV helpers (Deno KV) ---------- */
+/* ---------- 저장소 helpers (Upstash, 값=JSON 문자열) ---------- */
 async function getConfig() {
-  const r = await kv.get(['app', 'config']);
-  return r.value ?? { members: [], signupCode: null };
+  const raw = await redis('GET', 'app:config');
+  return raw ? JSON.parse(raw) : { members: [], signupCode: null };
 }
 async function setConfig(cfg) {
-  await kv.set(['app', 'config'], cfg);
+  await redis('SET', 'app:config', JSON.stringify(cfg));
 }
 async function getMember(id) {
-  const r = await kv.get(['member', id]);
-  return r.value ?? null;
+  const raw = await redis('GET', 'member:' + id);
+  return raw ? JSON.parse(raw) : null;
 }
 async function setMember(m) {
-  await kv.set(['member', m.id], m);
+  await redis('SET', 'member:' + m.id, JSON.stringify(m));
 }
 async function listMembers() {
   const cfg = await getConfig();
@@ -88,19 +108,19 @@ async function makeSession(member) {
     name: member.name,
     role: member.role,
     isAdmin: member.role === 'admin',
-    expiresAt: Date.now() + SESSION_TTL_MS
+    expiresAt: Date.now() + SESSION_TTL_SEC * 1000
   };
-  await kv.set(['session', token], sess, { expireIn: SESSION_TTL_MS });
+  await redis('SET', 'session:' + token, JSON.stringify(sess), 'EX', SESSION_TTL_SEC);
   return token;
 }
 
 async function authMember(request) {
   const token = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
   if (!token) return null;
-  const r = await kv.get(['session', token]);
-  const s = r.value;
-  if (!s) return null;
+  const raw = await redis('GET', 'session:' + token);
+  if (!raw) return null;
   try {
+    const s = JSON.parse(raw);
     if (s.expiresAt < Date.now()) return null;
     return { ...s, token };
   } catch (e) { return null; }
@@ -118,7 +138,8 @@ async function handleHealth() {
     members: (cfg.members || []).length,
     max: MAX_MEMBERS,
     apiKeyConfigured: !!Deno.env.get('ANTHROPIC_API_KEY'),
-    version: '2.0-deno'
+    storage: (UPSTASH_URL && UPSTASH_TOKEN) ? 'upstash' : 'MISSING',
+    version: '3.0-upstash'
   };
 }
 
@@ -172,7 +193,7 @@ async function handleLogin(request) {
 
 async function handleLogout(request) {
   const s = await authMember(request);
-  if (s) await kv.delete(['session', s.token]);
+  if (s) await redis('DEL', 'session:' + s.token);
   return { ok: true };
 }
 
@@ -285,7 +306,7 @@ async function handleAdminDelete(request) {
   const m = await getMember(id);
   if (!m) throw new Error('회원을 찾을 수 없어요');
   if (m.role === 'admin') throw new Error('관리자는 삭제할 수 없어요');
-  await kv.delete(['member', id]);
+  await redis('DEL', 'member:' + id);
   const cfg = await getConfig();
   cfg.members = (cfg.members || []).filter(x => x !== id);
   await setConfig(cfg);
